@@ -1,0 +1,19 @@
+# native GUI build artifacts (built locally via gui/build.bat)
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# mpv state that may appear if you point a config dir here while testing
+mpv.conf
+encore.conf
+encore-session.json
+encore-recent.json
+watch_later/
+*.log
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
