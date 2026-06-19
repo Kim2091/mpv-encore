@@ -21,6 +21,27 @@ local input = require "mp.input"
 
 local M = {}
 
+-- Package version, shown in the menu header alongside the mpv version.
+local ENCORE_VERSION = "1.1.1"
+
+-- mpv's version string with the trailing git hash dropped, e.g.
+-- "mpv v0.41.0-dev-g2d5dfb343" -> "mpv v0.41.0-dev".
+local function mpv_version()
+    return (mp.get_property("mpv-version", "mpv"):gsub("%-g%x+.*$", ""))
+end
+
+-- Open a URL in the system browser (detached, fire-and-forget).
+local function open_url(url)
+    local platform = mp.get_property_native("platform")
+    if platform == "windows" then
+        mp.commandv("run", "cmd", "/c", "start", "", url)
+    elseif platform == "darwin" then
+        mp.commandv("run", "open", url)
+    else
+        mp.commandv("run", "xdg-open", url)
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- Category tree
 -- ---------------------------------------------------------------------------
@@ -277,6 +298,7 @@ local C_SELTXT  = "&HFFFFFF&"   -- text on the selection bar (white on grey)
 local C_SELBG   = "&H454545&"   -- selection / hover bar fill (neutral grey)
 local C_DIVIDER = "&H3A3A3A&"   -- subtle divider line
 local C_MODIFIED = "&HFFCD60&"  -- "*" modified marker (Windows accent blue #60CDFF)
+local C_LINK    = "&HFFCD60&"   -- clickable URL (blue, underlined)
 local C_FOOT    = "&HB0B0B0&"   -- footer status-bar text
 -- tree hierarchy tiers
 local C_TOPHEAD  = "&HFFFFFF&"  -- top-level category text (bright white, bold)
@@ -579,6 +601,12 @@ function Menu:render()
         .. "{\\fs%d\\1c%s}  settings", treeX, titleY, title_fs, C_TEXT,
         I(title_fs * 0.72), C_DIM))
 
+    -- version line, right-aligned in the header: Encore + mpv versions
+    a:new_event()
+    a:append(string.format("{\\an6\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}Encore v%s   ·   %s",
+        boxR - pad, titleY + I(title_fs * 0.5), foot_fs, C_DIM,
+        ENCORE_VERSION, ass_escape(mpv_version())))
+
     a:new_event()
     if self.query ~= "" then
         a:append(string.format("{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}Search:  {\\1c%s}%s{\\1c%s}▌",
@@ -610,6 +638,10 @@ function Menu:render()
     -- mention help scrolling when the description overflows its pane
     if (self.help_max_scroll or 0) > 0 and self.mode ~= "options" then
         hint = hint .. "    ⇧↑↓/wheel scroll help"
+    end
+    -- mention the manual link when the focused setting has one
+    if self.url_value and self.mode ~= "options" then
+        hint = hint .. "    Ctrl+O open link"
     end
     local footTextY = I((footSepY + (boxB - pad)) / 2)
     a:new_event()
@@ -650,12 +682,25 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
         return
     end
 
+    -- clickable-URL state, recomputed each render (see the render loop below)
+    self.url_value = nil
+    self.url_rect = nil
+
     -- collect the body as wrapped lines, then clip to the pane height
     local lines = {}
     local function add(text, colour, fontsz)
         for piece in (wrap(text, cols) .. "\\N"):gmatch("(.-)\\N") do
             lines[#lines + 1] = { text = piece, colour = colour, fs = fontsz }
         end
+    end
+    -- a wrapped link: tagged so it renders blue + underlined and is hit-tested
+    local url_first, url_last
+    local function add_link(text)
+        url_first = #lines + 1
+        for piece in (wrap(text, cols) .. "\\N"):gmatch("(.-)\\N") do
+            lines[#lines + 1] = { text = piece, colour = C_LINK, fs = help_fs, link = true }
+        end
+        url_last = #lines
     end
     -- a small spacer (half a line) instead of a full blank line, so the
     -- description gets as many lines as possible
@@ -685,7 +730,8 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
     add(ass_escape(table.concat(meta, "      ")), C_DIM, help_fs, false)
 
     if s.url and s.url ~= "" then
-        add(ass_escape(s.url), C_ACCENT, help_fs, false)
+        self.url_value = s.url
+        add_link(ass_escape(s.url))
     end
 
     -- Show the FULL description. If it overflows the pane, scroll it (mouse
@@ -724,10 +770,21 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
     for i = startIdx, #lines do
         local h = line_h(lines[i].fs)
         if used + h > paneH then break end
+        local line_top = top + used
         used = used + h
         if i > startIdx then a:append("\\N") end
-        a:append(string.format("{\\fs%d\\1c%s%s}%s",
-            lines[i].fs, lines[i].colour, lines[i].bold and "\\b1" or "\\b0", lines[i].text))
+        a:append(string.format("{\\fs%d\\1c%s%s%s}%s",
+            lines[i].fs, lines[i].colour,
+            lines[i].bold and "\\b1" or "\\b0",
+            lines[i].link and "\\u1" or "\\u0", lines[i].text))
+        -- record the on-screen box of the URL line(s) so a click can open it
+        if url_first and i >= url_first and i <= url_last then
+            if not self.url_rect then
+                self.url_rect = { x0 = x, y0 = line_top, x1 = x + w, y1 = line_top + h }
+            else
+                self.url_rect.y1 = line_top + h
+            end
+        end
         lastIdx = i
     end
 
@@ -1128,6 +1185,13 @@ function Menu:on_mouse_click()
         if p then x, y = p.x, p.y end
     end
     if not x then return end
+    -- a click on the help pane's URL line opens it in the browser
+    local ur = self.url_rect
+    if self.url_value and ur and x >= ur.x0 and x <= ur.x1
+        and y >= ur.y0 and y <= ur.y1 then
+        open_url(self.url_value)
+        return
+    end
     local pane, idx = self:hit_test(x, y)
     if pane == "tree" then
         if self.mode == "options" or self.query ~= "" then return end
@@ -1150,6 +1214,12 @@ function Menu:on_mouse_click()
             self:close()
         end
     end
+end
+
+-- Open the focused setting's manual URL in the browser (Ctrl+O).
+function Menu:open_focused_url()
+    local s = self:focused_setting()
+    if s and s.url and s.url ~= "" then open_url(s.url) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1177,6 +1247,8 @@ function Menu:bind_keys()
     bind("LEFT", "left", function() self:on_left() end)
     bind("BS", "bs", function() self:backspace() end, true)
     bind("SPACE", "space", function() self:type_char(" ") end, true)
+    -- open the focused setting's manual URL (also clickable in the help pane)
+    bind("Ctrl+o", "openurl", function() self:open_focused_url() end)
 
     -- printable characters feed the search box
     for i = 1, #PRINTABLE do
@@ -1203,7 +1275,7 @@ end
 function Menu:unbind_keys()
     for _, n in ipairs({ "down", "up", "wdown", "wup", "pgdn", "pgup", "enter",
                          "right", "esc", "left", "bs", "space", "hdown", "hup",
-                         "click" }) do
+                         "click", "openurl" }) do
         mp.remove_key_binding("uimenu_" .. n)
     end
     for i = 1, #PRINTABLE do

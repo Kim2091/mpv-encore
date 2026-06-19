@@ -68,8 +68,9 @@ Open it from **right-click → Settings** (or bind a key to
 
 `↑↓` move · `Enter` edit / expand · `→` into a category's settings · `←`/`Esc`
 back · type anywhere to search all settings · `Shift+↑↓` or wheel to scroll a
-long description. **Mouse:** hover to highlight, click a category to expand,
-click a setting to edit, click outside to close.
+long description · `Ctrl+O` (or click the link) opens a setting's mpv-manual
+page. **Mouse:** hover to highlight, click a category to expand, click a setting
+to edit, click outside to close.
 
 ## Optional: native settings window (Windows)
 
