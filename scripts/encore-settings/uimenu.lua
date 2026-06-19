@@ -22,7 +22,7 @@ local input = require "mp.input"
 local M = {}
 
 -- Package version, shown in the menu header alongside the mpv version.
-local ENCORE_VERSION = "1.1.1"
+local ENCORE_VERSION = "1.1.2"
 
 -- mpv's version string with the trailing git hash dropped, e.g.
 -- "mpv v0.41.0-dev-g2d5dfb343" -> "mpv v0.41.0-dev".
@@ -30,16 +30,27 @@ local function mpv_version()
     return (mp.get_property("mpv-version", "mpv"):gsub("%-g%x+.*$", ""))
 end
 
--- Open a URL in the system browser (detached, fire-and-forget).
+-- Open a URL in the system browser. Uses a detached subprocess with each
+-- platform's canonical "open this in the default handler" launcher — on Windows
+-- rundll32's FileProtocolHandler, which is reliable for http(s) URLs (the `run`
+-- command + cmd's `start` proved flaky here).
 local function open_url(url)
     local platform = mp.get_property_native("platform")
+    local args
     if platform == "windows" then
-        mp.commandv("run", "cmd", "/c", "start", "", url)
+        args = { "rundll32.exe", "url.dll,FileProtocolHandler", url }
     elseif platform == "darwin" then
-        mp.commandv("run", "open", url)
+        args = { "open", url }
     else
-        mp.commandv("run", "xdg-open", url)
+        args = { "xdg-open", url }
     end
+    mp.msg.verbose("opening url: " .. url)
+    mp.command_native({
+        name = "subprocess",
+        args = args,
+        playback_only = false,
+        detach = true,
+    })
 end
 
 -- ---------------------------------------------------------------------------
