@@ -4,10 +4,9 @@ mpv.net's settings menu, recreated for **vanilla mpv** as a pure-Lua script — 
 .NET, no external dependencies, and nothing to rebase when mpv updates (it lives
 outside the mpv source tree and uses only the stable scripting API).
 
-It reproduces mpv.net's data-driven config editor: 152 setting definitions
-(145 real mpv/libplacebo options + 7 mpv.net options backed by the package's
-feature scripts), organised into a category tree, with live search, live-apply,
-and comment-preserving writes to `mpv.conf`.
+It reproduces mpv.net's data-driven config editor: 146 setting definitions — all
+real mpv / libplacebo options — organised into a category tree, with live
+search, live-apply, and comment-preserving writes to `mpv.conf`.
 
 ## Install
 
@@ -16,13 +15,14 @@ Copy the `encore-settings/` folder into mpv's scripts directory:
 - Windows: `%APPDATA%\mpv\scripts\encore-settings\`
 - Linux/macOS: `~/.config/mpv/scripts/encore-settings/`
 
-Then bind a key in `input.conf`:
+Then open it from **right-click → Settings** (the bundled `menu.conf`), or bind
+a key yourself — the package ships no `input.conf`:
 
 ```
-Ctrl+s  script-binding encore_settings/open
+c  script-binding encore_settings/open
 ```
 
-(or open it from a menu via `script-message-to encore_settings open`).
+(or trigger it via `script-message-to encore_settings open`).
 
 ## Usage
 
@@ -31,7 +31,9 @@ description panel — what mpv.net's GUI did, which mpv's built-in console menu
 can't.
 
 - **↑ / ↓** move, **Enter** select, **← / Backspace** go back a level, **Esc**
-  close. Mouse wheel and PgUp/PgDn also work.
+  close. PgUp/PgDn page; the mouse wheel scrolls (fast flicks included).
+- **Mouse:** hover to highlight, click a category to expand/collapse, click a
+  setting to edit, click outside the panel to close.
 - **Just type** to search — it filters across *every* setting in every category
   at once (each result shows its category), not just the current level.
 - A two-pane layout: the settings list on the left, and a **help panel on the
@@ -55,19 +57,18 @@ can't.
 Because `editor_conf.txt` is kept in mpv.net's format, future additions to
 mpv.net's setting list can be cross-ported by copying the relevant blocks.
 
-## mpv.net-specific options
+## Formerly script-backed options
 
-145 of the settings are real mpv / libplacebo options. The other 7 are
-`file = encore` options that the package's **feature scripts** implement:
-`recent-count` and `auto-load-folder` (encore-playback), `remember-volume` and
-`remember-audio-device` (encore-session), `autofit-image` and `autofit-audio`
-(encore-window), and `menu-syntax` (encore-menu). They're written to
-`encore.conf` and read by those scripts.
+Earlier versions added a few `file = encore` options for features the package
+implemented itself (recent files, auto-load folder, remember volume / audio
+device, content-aware window size). Those are now provided by **native mpv** —
+`--autocreate-playlist`, `--save-watch-history`, `--save-position-on-quit`,
+`--autofit` / `--geometry` — so the editor just exposes those real options and
+writes everything to `mpv.conf`. There are no longer any `encore.conf` settings.
 
-mpv.net options that have no equivalent in a script-only package (e.g.
-`process-instance`, `remember-window-position`, the WPF theme options) were
-removed from `editor_conf.txt` so the menu only shows settings that actually do
-something.
+mpv.net options that have no mpv equivalent (e.g. `process-instance`,
+`remember-window-position`, the WPF theme options) are omitted so the menu only
+shows settings that actually do something.
 
 ## Tests
 

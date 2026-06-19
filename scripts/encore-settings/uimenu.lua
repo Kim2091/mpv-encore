@@ -82,6 +82,7 @@ function M.open(settings, on_change)
     self._help_for = nil             -- setting the help_scroll currently applies to
 
     self.overlay = mp.create_osd_overlay("ass-events")
+    self.closed = false
     self:bind_keys()
     self:rebuild_tree()
     self:rebuild_list()
@@ -261,24 +262,27 @@ function Menu:focused_setting()
     return nil
 end
 
--- Colours are ASS BGR (&HBBGGRR&). A clean modern dark theme.
-local C_PANEL   = "&H1C1714&"   -- dark panel fill
-local C_RIGHT   = "&H241E1A&"   -- slightly lighter detail-pane fill
-local C_TEXT    = "&HF2F2F2&"   -- near-white
-local C_DIM     = "&H9A9A9A&"   -- secondary text
-local C_FAINT   = "&H666058&"   -- tertiary / placeholder
-local C_ACCENT  = "&HE8A85A&"   -- accent (warm blue, BGR)
-local C_NODE    = "&HD8C8B8&"   -- category text (cool light)
-local C_SELTXT  = "&H1A1410&"   -- text on the selection bar
-local C_SELBG   = "&HE8A85A&"   -- selection bar fill (accent)
-local C_DIVIDER = "&H3A322C&"   -- subtle divider line
-local C_MODIFIED = "&H66CCFF&"  -- "*" modified marker (warm/gold)
-local C_FOOT    = "&HB0AAA0&"   -- footer status-bar text (readable gray)
+-- Colours are ASS BGR (&HBBGGRR&). Tuned to match mpv's native (Windows 11)
+-- context menu: flat dark-grey panels, white text, a neutral grey hover/
+-- selection bar, and a single restrained blue accent reserved for state (the
+-- "modified" marker) — no warm tint.
+local C_PANEL   = "&H2B2B2B&"   -- panel fill (#2B2B2B)
+local C_RIGHT   = "&H2F2F2F&"   -- slightly lighter detail-pane fill (#2F2F2F)
+local C_TEXT    = "&HF5F5F5&"   -- near-white body text
+local C_DIM     = "&H9D9D9D&"   -- secondary text (shortcuts / values)
+local C_FAINT   = "&H6E6E6E&"   -- tertiary / placeholder / disabled
+local C_ACCENT  = "&HC8C8C8&"   -- neutral "accent": arrows, dots, titles (light grey)
+local C_NODE    = "&HD0D0D0&"   -- category text
+local C_SELTXT  = "&HFFFFFF&"   -- text on the selection bar (white on grey)
+local C_SELBG   = "&H454545&"   -- selection / hover bar fill (neutral grey)
+local C_DIVIDER = "&H3A3A3A&"   -- subtle divider line
+local C_MODIFIED = "&HFFCD60&"  -- "*" modified marker (Windows accent blue #60CDFF)
+local C_FOOT    = "&HB0B0B0&"   -- footer status-bar text
 -- tree hierarchy tiers
 local C_TOPHEAD  = "&HFFFFFF&"  -- top-level category text (bright white, bold)
-local C_SUBHEAD  = "&HF0C088&"  -- sub-category text (accent-tinted, bold)
-local C_SETNAME  = "&HC8C2BC&"  -- setting name
-local C_SETVAL   = "&H8C8680&"  -- setting value (dimmer)
+local C_SUBHEAD  = "&HD0D0D0&"  -- sub-category text (light grey, bold)
+local C_SETNAME  = "&HE0E0E0&"  -- setting name
+local C_SETVAL   = "&H9D9D9D&"  -- setting value (dimmer)
 
 -- Truncate a plain string to at most `n` characters, appending an ellipsis.
 local function truncate(s, n)
@@ -386,10 +390,13 @@ function Menu:render()
     -- vertical divider stop above it so the footer reads as one clean strip.
     local footSepY = bodyBot + I(foot_fs * 0.5)
 
-    -- 1) background panel (left + right tinted differently) with subtle shadow
+    -- 1) background panel (left + right tinted differently) with subtle shadow.
+    -- Near-opaque so it reads as a solid native menu surface rather than a HUD.
     box(boxL + 3, boxT + 3, boxR + 3, boxB + 3, "&H000000&", "&H50&")  -- drop shadow
-    box(boxL, boxT, boxR, boxB, C_PANEL, "&H14&")
-    box(divX, boxT, boxR, footSepY, C_RIGHT, "&H14&")
+    box(boxL, boxT, boxR, boxB, C_PANEL, "&H0A&")
+    box(divX, boxT, boxR, footSepY, C_RIGHT, "&H0A&")
+    -- thin native-style hairline border around the whole panel
+    outline(boxL, boxT, boxR, boxB, C_DIVIDER, "&H10&")
 
     -- 2) header underline + vertical divider + right horizontal split + footer rule
     box(treeX, searchY - I(fs * 0.7), boxR - pad, searchY - I(fs * 0.7) + I(osd_h * 0.0025),
@@ -608,6 +615,14 @@ function Menu:render()
     a:new_event()
     a:append(string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}%s",
         treeX + I(pad * 0.2), footTextY, foot_fs, C_FOOT, hint))
+
+    -- Hit-test geometry for mouse support, recomputed each render. Each pane's
+    -- visible rows occupy [top + (i-from)*rowH, +rowH] within [x0,x1].
+    self.tree_hit  = { x0 = boxL + I(pad * 0.4), x1 = divX - I(pad * 0.4),
+                       top = treeTop, rowH = rowH, from = tFrom, to = tTo }
+    self.list_hit  = { x0 = rightX - I(pad * 0.2), x1 = boxR - pad + I(pad * 0.2),
+                       top = listTop, rowH = rowH, from = lFrom, to = lTo }
+    self.panel_rect = { x0 = boxL, y0 = boxT, x1 = boxR, y1 = boxB }
 
     -- Pin the ASS coordinate space to the OSD size we measured. Without this,
     -- under Windows display scaling get_osd_size() reports physical pixels while
@@ -977,18 +992,28 @@ function Menu:help_scroll_by(delta)
     end
 end
 
--- Mouse wheel: scroll the help pane if the cursor is over it, otherwise move
--- the focused list/tree selection.
-function Menu:on_wheel(delta)
+-- Mouse wheel. Bound as a complex binding so each physical tick arrives with
+-- its `scale`: mpv collapses rapid identical key-down events, so a plain binding
+-- would register fast scrolling as a single step (or none). Fast scrolling sends
+-- fewer events each carrying a larger scale, so we multiply the step count by it.
+-- Scrolls the help pane if the cursor is over it, otherwise moves the focused
+-- list/tree selection.
+function Menu:on_wheel(dir, e)
+    if e then
+        local ev = e.event
+        if ev ~= "down" and ev ~= "press" and ev ~= "repeat" then return end
+    end
+    local scale = (e and tonumber(e.scale)) or 1
+    local steps = math.max(1, math.floor(scale + 0.5))
     local pos = mp.get_property_native("mouse-pos")
     local r = self.help_rect
     if pos and r and pos.x and pos.x >= r.x0 and pos.x <= r.x1
         and pos.y >= r.y0 and pos.y <= r.y1 then
-        self:help_scroll_by(delta)
-    elseif delta > 0 then
-        self:on_down()
+        self:help_scroll_by(dir * steps)
+    elseif self.focus == "list" or self.mode == "options" then
+        self:list_move(dir * steps)
     else
-        self:on_up()
+        self:tree_move(dir * steps)
     end
 end
 
@@ -1041,6 +1066,93 @@ function Menu:on_esc()
 end
 
 -- ---------------------------------------------------------------------------
+-- Mouse
+-- ---------------------------------------------------------------------------
+
+-- Map a cursor position to (pane, row). pane is "tree" | "list" | "help" | nil;
+-- row is the 1-based row index for "tree"/"list", nil otherwise.
+function Menu:hit_test(x, y)
+    local th = self.tree_hit
+    if th and x >= th.x0 and x <= th.x1 then
+        for i = th.from, th.to do
+            local ytop = th.top + (i - th.from) * th.rowH
+            if y >= ytop and y < ytop + th.rowH then return "tree", i end
+        end
+    end
+    local lh = self.list_hit
+    if lh and x >= lh.x0 and x <= lh.x1 then
+        for i = lh.from, lh.to do
+            local ytop = lh.top + (i - lh.from) * lh.rowH
+            if y >= ytop and y < ytop + lh.rowH then return "list", i end
+        end
+    end
+    local r = self.help_rect
+    if r and x >= r.x0 and x <= r.x1 and y >= r.y0 and y <= r.y1 then
+        return "help", nil
+    end
+    return nil, nil
+end
+
+-- Hover: highlight the row under the cursor (and, in browse mode, select the
+-- hovered category so its settings show on the right). Only re-renders when the
+-- target row actually changes, so pixel-by-pixel motion is cheap.
+function Menu:on_mouse_move(x, y)
+    if self.closed then return end
+    self.mouse_x, self.mouse_y = x, y
+    local pane, idx = self:hit_test(x, y)
+    if pane == "tree" then
+        if self.mode == "options" or self.query ~= "" then return end
+        if self.focus ~= "tree" or self.tree_sel ~= idx then
+            self.focus = "tree"
+            self.tree_sel = idx
+            self:rebuild_list()
+            self:render()
+        end
+    elseif pane == "list" then
+        if self.list_sel ~= idx or (self.mode ~= "options" and self.focus ~= "list") then
+            if self.mode ~= "options" then self.focus = "list" end
+            self.list_sel = idx
+            self:render()
+        end
+    end
+end
+
+-- Left click: activate the row under the cursor. Clicking a category toggles
+-- its expansion; clicking a setting/option edits it; clicking outside the panel
+-- closes the menu.
+function Menu:on_mouse_click()
+    if self.closed then return end
+    local x, y = self.mouse_x, self.mouse_y
+    if not x then
+        local p = mp.get_property_native("mouse-pos")
+        if p then x, y = p.x, p.y end
+    end
+    if not x then return end
+    local pane, idx = self:hit_test(x, y)
+    if pane == "tree" then
+        if self.mode == "options" or self.query ~= "" then return end
+        self.focus = "tree"
+        self.tree_sel = idx
+        local row = self.tree_rows[idx]
+        if row and row.expandable then
+            self:toggle_node()
+        else
+            self:rebuild_list()
+            self:render()
+        end
+    elseif pane == "list" then
+        if self.mode ~= "options" then self.focus = "list" end
+        self.list_sel = idx
+        self:list_activate()
+    elseif pane == nil then
+        local pr = self.panel_rect
+        if pr and not (x >= pr.x0 and x <= pr.x1 and y >= pr.y0 and y <= pr.y1) then
+            self:close()
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- Key bindings
 -- ---------------------------------------------------------------------------
 
@@ -1054,8 +1166,6 @@ function Menu:bind_keys()
 
     bind("DOWN", "down", function() self:on_down() end, true)
     bind("UP", "up", function() self:on_up() end, true)
-    bind("WHEEL_DOWN", "wdown", function() self:on_wheel(1) end, true)
-    bind("WHEEL_UP", "wup", function() self:on_wheel(-1) end, true)
     bind("PGDWN", "pgdn", function() self:on_page(1) end, true)
     bind("PGUP", "pgup", function() self:on_page(-1) end, true)
     -- scroll the help/description pane from the keyboard
@@ -1073,19 +1183,40 @@ function Menu:bind_keys()
         local c = PRINTABLE:sub(i, i)
         bind(c, "key_" .. i, function() self:type_char(c) end, true)
     end
+
+    -- Mouse. Wheel is `complex` so we can read its scale (fast-scroll fix);
+    -- MBTN_LEFT activates on press; hover tracking comes from the mouse-pos
+    -- property observer.
+    mp.add_forced_key_binding("WHEEL_DOWN", "uimenu_wdown",
+        function(e) self:on_wheel(1, e) end, { complex = true })
+    mp.add_forced_key_binding("WHEEL_UP", "uimenu_wup",
+        function(e) self:on_wheel(-1, e) end, { complex = true })
+    mp.add_forced_key_binding("MBTN_LEFT", "uimenu_click",
+        function(e) if e.event == "down" then self:on_mouse_click() end end,
+        { complex = true })
+    self._mouse_cb = function(_, pos)
+        if pos and pos.x then self:on_mouse_move(pos.x, pos.y) end
+    end
+    mp.observe_property("mouse-pos", "native", self._mouse_cb)
 end
 
 function Menu:unbind_keys()
     for _, n in ipairs({ "down", "up", "wdown", "wup", "pgdn", "pgup", "enter",
-                         "right", "esc", "left", "bs", "space", "hdown", "hup" }) do
+                         "right", "esc", "left", "bs", "space", "hdown", "hup",
+                         "click" }) do
         mp.remove_key_binding("uimenu_" .. n)
     end
     for i = 1, #PRINTABLE do
         mp.remove_key_binding("uimenu_key_" .. i)
     end
+    if self._mouse_cb then
+        mp.unobserve_property(self._mouse_cb)
+    end
 end
 
 function Menu:close()
+    if self.closed then return end
+    self.closed = true
     self:unbind_keys()
     self.overlay:remove()
 end

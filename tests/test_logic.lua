@@ -19,7 +19,7 @@ local content = f:read("*a"); f:close()
 local settings = conf.load(content)
 
 print("=== parser ===")
-check(#settings == 152, "settings count == 152 (got " .. #settings .. ")")
+check(#settings == 146, "settings count == 146 (got " .. #settings .. ")")
 
 -- index a few known settings
 local by = {}
@@ -39,9 +39,15 @@ check(by["video-sync"].help:find("\n") ~= nil, "help newline unescaped")
 -- removed mpv.net-only options should be gone
 check(by["process-instance"] == nil, "process-instance removed")
 check(by["dark-mode"] == nil, "dark-mode removed")
--- functional mpv.net options should remain
-check(by["recent-count"] ~= nil, "recent-count kept")
-check(by["remember-volume"] ~= nil, "remember-volume kept")
+-- former encore-script options are gone now that their features are native mpv
+check(by["recent-count"] == nil, "recent-count removed")
+check(by["remember-volume"] == nil, "remember-volume removed")
+check(by["auto-load-folder"] == nil, "auto-load-folder removed")
+check(by["autofit-image"] == nil, "autofit-image removed")
+-- their native replacements are present as real mpv options
+check(by["autocreate-playlist"] ~= nil, "autocreate-playlist present")
+check(by["save-watch-history"] ~= nil, "save-watch-history present")
+check(by["autofit"] ~= nil, "autofit present")
 
 -- ---- conffile round-trip ----
 print("=== conffile ===")

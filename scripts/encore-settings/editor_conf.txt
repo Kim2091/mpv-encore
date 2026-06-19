@@ -1,19 +1,9 @@
 
-name = recent-count
-file = encore
-directory = General
-help = <int> Amount of recent files to be remembered. Default: 15 (mpv.net option)
-
 name = image-exts
 file = mpv
 directory = General
 width = 500
-help = Image file extentions to try to match when using --cover-art-auto, --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations and used by the auto-load-folder feature. Default: avif,bmp,gif,j2k,jp2,jpeg,jpg,jxl,png,svg,tga,tif,tiff,webp
-
-name = menu-syntax
-file = encore
-directory = General
-help = Used menu syntax for defining the context menu in input.conf.\nmpv.net by default uses '#menu:', uosc uses '#!' by default.
+help = Image file extentions to try to match when using --cover-art-auto, --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations. Default: avif,bmp,gif,j2k,jp2,jpeg,jpg,jxl,png,svg,tga,tif,tiff,webp
 
 name = video-sync
 file = mpv
@@ -758,20 +748,12 @@ name = video-exts
 file = mpv
 directory = Video
 width = 500
-help = Video file extentions to try to match when using --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations and used by the auto-load-folder feature. Default: 3g2,3gp,avi,flv,m2ts,m4v,mj2,mkv,mov,mp4,mpeg,mpg,ogv,rmvb,ts,webm,wmv,y4m
+help = Video file extentions to try to match when using --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations. Default: 3g2,3gp,avi,flv,m2ts,m4v,mj2,mkv,mov,mp4,mpeg,mpg,ogv,rmvb,ts,webm,wmv,y4m
 
 name = volume
 file = mpv
 directory = Audio
 help = Set the startup volume. 0 means silence, 100 means no volume reduction or amplification. Negative values can be passed for compatibility, but are treated as 0. Since mpv 0.18.1, this always controls the internal mixer (aka "softvol"). Default: 100
-
-name = remember-volume
-file = encore
-directory = Audio
-help = Save volume and mute on exit and restore it on start. (mpv.net option)
-default = yes
-option = yes
-option = no
 
 name = alang
 file = mpv
@@ -795,19 +777,11 @@ width = 400
 url = https://mpv.io/manual/master/#options-audio-device
 help = <name> Use the given audio device. This consists of the audio output name, e.g. alsa, followed by /, followed by the audio output specific device name. The default value for this option is auto, which tries every audio output in preference order with the default device.\n\nTo list available audio devices in mpv.net, use the context menu:\n\nView > More > Show Audio Devices.\n\nTo change the audio device in mpv.net, also use the context menu:\n\nAudio > Audio Device
 
-name = remember-audio-device
-file = encore
-directory = Audio
-help = Save and restore the audio device chosen in the context menu. Default: yes
-default = yes
-option = yes
-option = no
-
 name = audio-exts
 file = mpv
 directory = Audio
 width = 500
-help = Audio file extentions to try to match when using --audio-file-auto, --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations and used by the auto-load-folder feature. Default: aac,ac3,aiff,ape,au,dts,eac3,flac,m4a,mka,mp3,oga,ogg,ogm,opus,thd,wav,wav,wma,wv
+help = Audio file extentions to try to match when using --audio-file-auto, --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations. Default: aac,ac3,aiff,ape,au,dts,eac3,flac,m4a,mka,mp3,oga,ogg,ogm,opus,thd,wav,wav,wma,wv
 
 name = slang
 file = mpv
@@ -936,16 +910,6 @@ file = mpv
 directory = Window
 help = <int> Maximum window height in percent. Default: 80
 
-name = autofit-image
-file = encore
-directory = Window
-help = <int> Initial window height in percent for image files. Default: 80
-
-name = autofit-audio
-file = encore
-directory = Window
-help = <int> Initial window height in percent for audio files. Default: 70
-
 name = geometry
 file = mpv
 directory = Window
@@ -1051,13 +1015,13 @@ option = no
 option = filter
 option = same 
 
-name = auto-load-folder
-file = encore
+name = save-watch-history
+file = mpv
 directory = Playback
-help = For single files automatically load the entire directory into the playlist. (deprecated mpv.net option, autocreate-playlist can be used instead)
-default = yes
-option = yes
+help = Record opened files to a history file so they can be reopened from the native recent-files menu (Right-click > Open > Recent Files, or script-binding select/select-watch-history). Default: no
+default = no
 option = no
+option = yes
 
 name = reset-on-next-file
 file = mpv

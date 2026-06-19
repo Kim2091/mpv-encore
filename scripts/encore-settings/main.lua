@@ -4,8 +4,8 @@
 -- .NET, no external dependencies — it uses only mpv's built-in scripting API, so
 -- future mpv updates require no rebasing.
 --
--- Bind a key in input.conf, e.g.:
---     Ctrl+s  script-binding encore_settings/open
+-- Open it from the right-click menu (Settings), or bind a key, e.g.:
+--     c  script-binding encore_settings/open
 -- or trigger via:  script-message-to encore_settings open
 -- (mpv normalises the script directory name "encore-settings" to "encore_settings".)
 
@@ -106,27 +106,39 @@ local function on_change(setting)
     elseif setting.file == "mpv" then
         apply_property(setting.name, setting.value)
     end
-    -- encore-tagged settings persist to encore.conf but are not applied live;
-    -- that behaviour is provided later by the fork-touchpoint modules.
-
     -- Persist immediately so changes survive even if the user just escapes.
     sync_libplacebo()
     write_file(MPV_CONF, cf:get_content("mpv"))
-    write_file(ENCORE_CONF, cf:get_content("encore"))
+    -- encore.conf is only written if it actually has content. The package no
+    -- longer ships any `file = encore` settings (their features are now native
+    -- mpv options), so this normally no-ops — but an existing encore.conf is
+    -- still round-tripped if the user has one.
+    local encore_content = cf:get_content("encore")
+    if encore_content ~= "" then write_file(ENCORE_CONF, encore_content) end
 end
 
 -- ---------------------------------------------------------------------------
 -- Entry point
 -- ---------------------------------------------------------------------------
 
+-- Only one menu may exist at a time. Re-triggering the binding while the menu
+-- is open would build a second overlay and clobber the shared forced-key
+-- bindings, orphaning the first as an un-closeable ghost. This is easy to hit
+-- because free-text editing briefly unbinds the menu's keys (so the global
+-- "open" key, e.g. C, becomes live again). Guard against re-entry.
+local active
+
 local function open_menu()
+    if active and not active.closed then
+        return                          -- already open; ignore the re-open
+    end
     if not settings then
         if not load_data() then
             mp.osd_message("encore-settings: failed to load (see log)")
             return
         end
     end
-    menu.open(settings, on_change)
+    active = menu.open(settings, on_change)
 end
 
 mp.add_key_binding(nil, "open", open_menu)

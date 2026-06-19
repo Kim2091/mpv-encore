@@ -16,27 +16,28 @@ mpv.net's config editor: a category tree, per-setting controls, a live
 help/description panel, and type-anywhere search — drawn as an in-player OSD
 menu, so it needs no GUI toolkit.
 
-![context menu](docs/context-menu.png)
-
-A themed, cursor-positioned **right-click context menu** defined from your
-`input.conf`, plus info dialogs, session memory, and more.
+A **native right-click context menu** — mpv's own built-in menu, defined in
+`menu.conf` and drawn by the OS — exposes every feature, so Encore ships no key
+bindings of its own.
 
 ## Features
 
 | Script | What it does |
 |--------|--------------|
-| **encore-settings** | Graphical settings editor — 152 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option |
-| **encore-menu** | Right-click context menu built from `#menu:` comments in `input.conf`; opens at the cursor, cascading submenus, mouse + keyboard |
-| **encore-info** | Info dialogs: media info, commands, key bindings, protocols, decoders, demuxers, profiles, about |
+| **encore-settings** | Graphical settings editor — 146 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
 | **encore-files** | File operations via native dialogs (Windows): open files, load subtitle/audio, open from clipboard, DVD/Blu-ray |
-| **encore-playback** | Auto-load the rest of a folder into the playlist; recent-files menu |
-| **encore-session** | Remember volume and audio device across sessions |
-| **encore-window** | Content-aware initial window size for images and audio |
-| **encore-edit** | Open `mpv.conf` / `input.conf` / `encore.conf` in your text editor |
 
-Several mpv.net features are already built into modern mpv (`select.lua`):
-playlist / track / audio-device selectors, command palette, properties viewer.
-The bundled `input.conf` wires keys to those too.
+Most of what mpv.net offered is now built into modern mpv, so Encore leans on it
+rather than reimplementing it. The bundled `menu.conf` wires these native
+features into the right-click menu:
+
+- **Context menu, info & statistics, config editing** — `select.lua` / `stats.lua`
+  (`select/context-menu`, `stats/display-stats`, `select/edit-config-file`).
+- **Playlist / track / audio-device / chapter selectors, command palette,
+  properties viewer, recent files (watch history)** — `select.lua`.
+- **Auto-load a folder as a playlist** — `--autocreate-playlist`.
+- **Content-aware window sizing** — `--autofit` / `--geometry`.
+- **Remember volume across sessions** — `--save-position-on-quit`.
 
 ## Requirements
 
@@ -44,8 +45,8 @@ The bundled `input.conf` wires keys to those too.
 
 ## Install
 
-Copy `scripts/` and `script-modules/` into your mpv config directory, and merge
-`input.conf` into your own:
+Copy `scripts/`, `script-modules/`, and `menu.conf` into your mpv config
+directory:
 
 | OS | Config directory |
 |----|------------------|
@@ -53,47 +54,22 @@ Copy `scripts/` and `script-modules/` into your mpv config directory, and merge
 | Linux / macOS | `~/.config/mpv/` |
 
 So you end up with e.g. `~/.config/mpv/scripts/encore-settings/`,
-`~/.config/mpv/script-modules/`, and your merged `~/.config/mpv/input.conf`.
+`~/.config/mpv/script-modules/`, and `~/.config/mpv/menu.conf`.
 
-Restart mpv. Press the keys below (or edit `input.conf` to taste).
+Restart mpv, then **right-click** for the menu. Encore ships no `input.conf` —
+every feature is in the menu, and mpv's built-in defaults already bind
+right-click, `i`/`I` (info & statistics), `?` (key bindings), and friends. Want
+shortcut keys? Add your own, e.g. `c script-binding encore_settings/open`.
 
-## Default key bindings
+## Settings editor
 
-From the bundled `input.conf` (edit freely):
-
-| Key | Action |
-|-----|--------|
-| `c` | Open the settings editor |
-| right-click | Context menu |
-| `i` | Info dialogs |
-| `o` | Open files (native dialog) |
-| `Ctrl+v` | Open path/URL from clipboard |
-| `Ctrl+r` | Recent files |
-| `F1` | Command palette · `Ctrl+p` playlist · `p` properties |
-| `?` | Edit a config file |
-
-### Settings editor controls
+Open it from **right-click → Settings** (or bind a key to
+`script-binding encore_settings/open`).
 
 `↑↓` move · `Enter` edit / expand · `→` into a category's settings · `←`/`Esc`
-back · type anywhere to search all settings · mouse wheel or `Shift+↑↓` to scroll
-a long description.
-
-## Configuration (mpv.net options)
-
-Seven mpv.net-specific options are implemented by the feature scripts and stored
-in `encore.conf` — set them from the settings editor (General / Window sections),
-or by hand:
-
-```ini
-# encore.conf
-remember-volume=yes
-remember-audio-device=yes
-auto-load-folder=yes
-recent-count=15
-autofit-image=80
-autofit-audio=70
-menu-syntax=#menu:
-```
+back · type anywhere to search all settings · `Shift+↑↓` or wheel to scroll a
+long description. **Mouse:** hover to highlight, click a category to expand,
+click a setting to edit, click outside to close.
 
 ## Optional: native settings window (Windows)
 
@@ -131,8 +107,13 @@ vanilla mpv. It is an independent project and is **not** affiliated with mpv.net
 please don't confuse the two.
 
 The setting definitions in `scripts/encore-settings/editor_conf.txt` are derived
-from mpv.net, and the folder-loading logic adapts mpv's `autoload.lua`. Both
+from mpv.net. Both
 [mpv.net](https://github.com/stax76/mpv.net) and [mpv](https://github.com/mpv-player/mpv)
 are GPL-licensed.
+
+The bundled `menu.conf` (the native context-menu layout) is adapted from
+[**Samillion/mpv-conf**](https://github.com/Samillion/mpv-conf)'s `menu.conf` —
+its vanilla-mpv command structure is reused, with the modernz/sponsorblock
+entries dropped and Encore's own actions wired in. With thanks to Samillion.
 
 Licensed under the **GNU General Public License v2** — see [LICENSE](LICENSE).
