@@ -72,6 +72,15 @@ long description · `Ctrl+O` (or click the link) opens a setting's mpv-manual
 page. **Mouse:** hover to highlight, click a category to expand, click a setting
 to edit, click outside to close.
 
+## Windows file associations
+
+Want media files to open in mpv on double-click (like mpv.net's setup)? Run
+[`tools/file-associations/`](tools/file-associations/)`Register-File-Associations.cmd`.
+It registers **your** `mpv.exe` for ~60 video/audio/image types — per-user (no
+admin), and fully reversible with the matching `Unregister-…` script. Windows
+10/11 then has you confirm the defaults in Settings. See
+[`tools/file-associations/README.md`](tools/file-associations/README.md).
+
 ## Optional: native settings window (Windows)
 
 A native Win32 settings window (same idea, real OS window) is included as an
