@@ -22,7 +22,7 @@ local input = require "mp.input"
 local M = {}
 
 -- Package version, shown in the menu header alongside the mpv version.
-local ENCORE_VERSION = "1.1.2"
+local ENCORE_VERSION = "1.1.3"
 
 -- mpv's version string with the trailing git hash dropped, e.g.
 -- "mpv v0.41.0-dev-g2d5dfb343" -> "mpv v0.41.0-dev".
