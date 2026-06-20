@@ -8,30 +8,39 @@ whatever mpv build you already have.
 
 It writes everything under `HKEY_CURRENT_USER`, so it needs **no administrator
 rights**, only affects the current user, and is **fully reversible**. It is also
-**non-destructive**: it never overwrites the handler a file type already has, so
-existing associations (mpv.net's, or anything else) are left intact — you choose
-mpv as the default yourself in Settings.
+**safe by default**: it makes mpv the default only for file types that have **no
+association yet**, and never overwrites one you (or another program, like
+mpv.net) already set. For those, you either pick mpv in Settings, or opt into the
+override mode below — which still backs up and restores the displaced handler.
 
 ## Use it
 
 1. **Register** — double-click **`Register-File-Associations.cmd`**.
    - If `mpv.exe` isn't on your `PATH`, it asks for the full path to it.
-   - It then opens **Settings → Apps → Default apps**.
-2. **Set the defaults** — Windows 10/11 won't let an app make itself the default
-   automatically. In that Settings page, either search a file type (e.g. `.mkv`)
-   and pick **mpv (Encore)**, or find **mpv (Encore)** in the app list and set
-   the types you want.
-3. **Undo** — double-click **`Unregister-File-Associations.cmd`** to remove
-   everything the tool added.
+   - It makes mpv the default for any *unassociated* types right away, then opens
+     **Settings → Apps → Default apps**.
+2. **Set the rest (optional)** — for types another program already owns, search
+   the type (e.g. `.mkv`) in that Settings page and pick **mpv (Encore)**.
+   Windows requires you to confirm these; no app may take them silently.
+3. **Undo** — double-click **`Unregister-File-Associations.cmd`**. Removes
+   everything and restores anything the tool displaced.
+
+**Take over everything (opt-in):** double-click
+**`Register-File-Associations-(override).cmd`** to also claim types other programs
+own. The displaced associations are backed up and restored by Unregister.
+(Windows-protected per-type defaults — "UserChoice" — still need a Settings
+confirmation even here.)
 
 Prefer the command line?
 
 ```powershell
-# register (auto-detects mpv.exe on PATH, else prompts)
+# register (auto-detects mpv.exe on PATH, else prompts; claims only free types)
 powershell -ExecutionPolicy Bypass -File .\Register-FileAssociations.ps1
 # register a specific mpv
 powershell -ExecutionPolicy Bypass -File .\Register-FileAssociations.ps1 -MpvPath "C:\path\to\mpv.exe"
-# remove
+# also take over types other programs own (reversible)
+powershell -ExecutionPolicy Bypass -File .\Register-FileAssociations.ps1 -OverrideExisting
+# remove (and restore anything displaced)
 powershell -ExecutionPolicy Bypass -File .\Register-FileAssociations.ps1 -Unregister
 ```
 
@@ -44,8 +53,9 @@ Under `HKCU\Software\Classes`, `HKCU\Software\Clients\Media\Encore` and
 - a per-extension ProgID (`Encore.<ext>`) for each type, opening `"<your
   mpv.exe>" "%1"` with mpv's icon;
 - each extension gets that ProgID added to its **OpenWithProgids** (so mpv shows
-  up under "Open with"), plus a `PerceivedType` if it had none — the extension's
-  existing **default handler is never changed**;
+  up under "Open with"), plus a `PerceivedType` if it had none. mpv is made the
+  extension's **default only if it had none** (or for every type with
+  `-OverrideExisting`, which first backs up the displaced handler);
 - the `ytdl` / `rtsp` / `srt` / `srtp` URL protocols;
 - an **App Paths** entry (run `mpv` from the Run dialog) and an
   `Applications\mpv.exe` entry with a `FriendlyAppName` + `SupportedTypes`;

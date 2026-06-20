@@ -31,7 +31,13 @@
 param(
     [string]$MpvPath,
     [switch]$Unregister,
-    [switch]$NoSettings
+    [switch]$NoSettings,
+    # Also take over types that ANOTHER program already owns (overwrites their
+    # default). Off by default. The displaced handler is backed up and restored
+    # on -Unregister. Note: a Windows-protected per-type default (UserChoice)
+    # still can't be changed without your confirmation in Settings.
+    [Alias('Force')]
+    [switch]$OverrideExisting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +47,7 @@ $Classes  = 'HKCU:\Software\Classes'
 $AppName  = 'Encore'
 $AppRoot  = 'HKCU:\Software\Clients\Media\Encore'
 $Caps     = "$AppRoot\Capabilities"
+$Backup   = "$AppRoot\Backup"             # prior defaults we overwrote, for restore
 $RegApps  = 'HKCU:\Software\RegisteredApplications'
 $AppPaths = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths'
 $Friendly = 'mpv (Encore)'
@@ -69,6 +76,26 @@ function Ensure-Key($k) { if (-not (Test-Path -LiteralPath $k)) { New-Item -Path
 function Set-Default($k, $v) { Ensure-Key $k; Set-Item -LiteralPath $k -Value $v }
 function Set-Named($k, $n, $v) { Ensure-Key $k; New-ItemProperty -LiteralPath $k -Name $n -Value $v -PropertyType String -Force | Out-Null }
 
+# An extension is "unassociated" (safe to claim as default) when it has neither a
+# user-chosen handler nor any class default in the merged HKCR view.
+function Test-Claimable([string]$ext) {
+    $uc = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$ext\UserChoice"
+    if (Test-Path -LiteralPath $uc) { return $false }
+    $k = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey($ext)
+    if ($k) {
+        $def = $k.GetValue('')
+        $k.Close()
+        if (-not [string]::IsNullOrEmpty($def)) { return $false }
+    }
+    return $true
+}
+
+# Delete a key's default (unnamed) value under HKCU\Software\Classes.
+function Remove-Default([string]$classesSubPath) {
+    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($classesSubPath, $true)
+    if ($k) { try { $k.DeleteValue('', $false) } catch { }; $k.Close() }
+}
+
 # Tell the shell associations changed so icons/menus refresh without a re-login.
 function Update-Shell {
     try {
@@ -84,6 +111,8 @@ function Register-Associations([string]$mpv) {
     $exe  = Split-Path $mpv -Leaf            # mpv.exe
     $cmd  = "`"$mpv`" `"%1`""
     $icon = "$mpv,0"
+    $script:Claimed = 0                      # unassociated types we claimed
+    $script:Overridden = 0                   # already-owned types we took over (-OverrideExisting)
 
     # Remember which mpv.exe we wired up, so -Unregister can clean its keys.
     Set-Named $AppRoot 'MpvPath' $mpv
@@ -123,10 +152,7 @@ function Register-Associations([string]$mpv) {
             Set-Default $progKey ("{0} file (mpv)" -f $pt)
             Set-Default "$progKey\DefaultIcon" $icon
             Set-Default "$progKey\shell\open\command" $cmd
-            # wire the extension to it - additively. We deliberately DO NOT set
-            # the extension's default handler: that would erase the user's
-            # existing association (mpv.net's, or whatever). The user picks mpv
-            # as default in Settings; our Capabilities entry makes that one click.
+            # wire the extension to it - additively.
             $extKey = "$Classes\$dot"
             if (-not (Get-ItemProperty -LiteralPath $extKey -Name 'PerceivedType' -ErrorAction SilentlyContinue)) {
                 Set-Named $extKey 'PerceivedType' $pt
@@ -135,6 +161,19 @@ function Register-Associations([string]$mpv) {
             # advertise the type under the app + capabilities
             Set-Named "$appKey\SupportedTypes" $dot ''
             Set-Named "$Caps\FileAssociations" $dot $progId
+            # Claim the default. By default only for types nothing else owns yet;
+            # with -OverrideExisting, also take over types another program owns
+            # (backing up the displaced handler so -Unregister can restore it).
+            $claimable = Test-Claimable $dot
+            if ($claimable -or $OverrideExisting) {
+                $cur = (Get-Item -LiteralPath $extKey -ErrorAction SilentlyContinue).GetValue('')
+                if ($cur -and $cur -ne $progId -and
+                    -not (Get-ItemProperty -LiteralPath $Backup -Name $dot -ErrorAction SilentlyContinue)) {
+                    Set-Named $Backup $dot $cur          # remember what we displaced
+                }
+                Set-Default $extKey $progId
+                if ($claimable) { $script:Claimed++ } else { $script:Overridden++ }
+            }
         }
     }
 
@@ -156,9 +195,20 @@ function Unregister-Associations {
 
     foreach ($grp in $Media) {
         foreach ($e in $grp.exts) {
-            $owp = "$Classes\.$e\OpenWithProgids"
+            $dot = ".$e"; $progId = "$ProgPrefix$dot"
+            $extKey = "$Classes\$dot"
+            $owp = "$extKey\OpenWithProgids"
             if (Test-Path -LiteralPath $owp) {
-                Remove-ItemProperty -LiteralPath $owp -Name "$ProgPrefix.$e" -ErrorAction SilentlyContinue
+                Remove-ItemProperty -LiteralPath $owp -Name $progId -ErrorAction SilentlyContinue
+            }
+            # if we own this type's default, restore what we displaced (or clear it)
+            $cur = (Get-Item -LiteralPath $extKey -ErrorAction SilentlyContinue).GetValue('')
+            if ($cur -eq $progId) {
+                $old = $null
+                if (Test-Path -LiteralPath $Backup) {
+                    $old = (Get-ItemProperty -LiteralPath $Backup -Name $dot -ErrorAction SilentlyContinue).$dot
+                }
+                if ($old) { Set-Default $extKey $old } else { Remove-Default "Software\Classes\$dot" }
             }
         }
         Remove-Item -LiteralPath "$Classes\SystemFileAssociations\$($grp.type)\OpenWithList\$exe" -Recurse -Force -ErrorAction SilentlyContinue
@@ -168,7 +218,6 @@ function Unregister-Associations {
     Remove-Item -LiteralPath "$AppPaths\$exe" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $AppRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -LiteralPath $RegApps -Name $AppName -ErrorAction SilentlyContinue
-    # We never set an extension's default handler, so nothing there to restore.
     Update-Shell
 }
 
@@ -195,10 +244,15 @@ $count = Register-Associations $MpvPath
 Write-Host ""
 Write-Host "Registered mpv for $count media types + $($Protocols.Count) stream protocols." -ForegroundColor Green
 Write-Host "  mpv.exe: $MpvPath"
-Write-Host ""
-Write-Host "To finish, set the defaults you want. Windows will not let an app do"
-Write-Host "it automatically: in Default apps, search a type (e.g. .mkv) or pick" -ForegroundColor Yellow
-Write-Host "'mpv (Encore)' and set it as default." -ForegroundColor Yellow
+Write-Host "  claimed $Claimed type(s) that had no association yet." -ForegroundColor Green
+if ($OverrideExisting) {
+    Write-Host "  took over $Overridden type(s) from other programs (backed up for restore)." -ForegroundColor Green
+} elseif ($Overridden -eq 0 -and $Claimed -lt $count) {
+    Write-Host ""
+    Write-Host "Types another program already owns were left untouched. Re-run with" -ForegroundColor Yellow
+    Write-Host "-OverrideExisting (or the Override script) to take those over too, or" -ForegroundColor Yellow
+    Write-Host "switch individual types to 'mpv (Encore)' in Default apps." -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "Run with -Unregister (or the Unregister script) to undo all of this."
 
