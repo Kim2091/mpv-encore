@@ -1,12 +1,16 @@
 # Windows file associations
 
-A small tool (Windows only) that registers **your** `mpv.exe` as a handler for
-common video / audio / image files — the same convenience mpv.net's setup
-offers. Encore is a configuration package and does **not** ship mpv, so this
-points Windows at whatever mpv build you already have.
+A tool (Windows only) that registers **your** `mpv.exe` as a handler for ~70
+video / audio / image file types and the `ytdl`/`rtsp`/`srt`/`srtp` streaming
+protocols — a port of how mpv.net's setup registers itself. Encore is a
+configuration package and does **not** ship mpv, so this points Windows at
+whatever mpv build you already have.
 
-Everything is written under `HKEY_CURRENT_USER`, so it needs **no administrator
-rights**, only affects the current user, and is **fully reversible**.
+It writes everything under `HKEY_CURRENT_USER`, so it needs **no administrator
+rights**, only affects the current user, and is **fully reversible**. It is also
+**non-destructive**: it never overwrites the handler a file type already has, so
+existing associations (mpv.net's, or anything else) are left intact — you choose
+mpv as the default yourself in Settings.
 
 ## Use it
 
@@ -15,7 +19,7 @@ rights**, only affects the current user, and is **fully reversible**.
    - It then opens **Settings → Apps → Default apps**.
 2. **Set the defaults** — Windows 10/11 won't let an app make itself the default
    automatically. In that Settings page, either search a file type (e.g. `.mkv`)
-   and pick **Encore (mpv)**, or find **Encore (mpv)** in the app list and set
+   and pick **mpv (Encore)**, or find **mpv (Encore)** in the app list and set
    the types you want.
 3. **Undo** — double-click **`Unregister-File-Associations.cmd`** to remove
    everything the tool added.
@@ -33,16 +37,24 @@ powershell -ExecutionPolicy Bypass -File .\Register-FileAssociations.ps1 -Unregi
 
 ## What it changes
 
-Under `HKCU\Software\Classes` and `HKCU\Software\Encore`:
+It mirrors mpv.net's registration, but per-user (HKCU) instead of machine-wide.
+Under `HKCU\Software\Classes`, `HKCU\Software\Clients\Media\Encore` and
+`HKCU\Software\RegisteredApplications`:
 
-- a `Encore.mpv` ProgID whose open command is `"<your mpv.exe>" "%1"`;
-- each media extension gets `Encore.mpv` added to its **OpenWithProgids** (so mpv
-  shows up under "Open with") — the extension's existing default is never
-  touched;
-- an application entry (**Encore (mpv)**) in *Default apps* via
-  `RegisteredApplications` + `Capabilities`.
+- a per-extension ProgID (`Encore.<ext>`) for each type, opening `"<your
+  mpv.exe>" "%1"` with mpv's icon;
+- each extension gets that ProgID added to its **OpenWithProgids** (so mpv shows
+  up under "Open with"), plus a `PerceivedType` if it had none — the extension's
+  existing **default handler is never changed**;
+- the `ytdl` / `rtsp` / `srt` / `srtp` URL protocols;
+- an **App Paths** entry (run `mpv` from the Run dialog) and an
+  `Applications\mpv.exe` entry with a `FriendlyAppName` + `SupportedTypes`;
+- mpv added to the video/audio/image **OpenWithList**;
+- application **Capabilities** + a **RegisteredApplications** entry, so
+  **mpv (Encore)** appears in *Settings > Default apps*.
 
-`Unregister` removes all of the above.
+`Unregister` removes all of the above and leaves every extension's existing
+default exactly as it was.
 
 ## Notes / limitations
 

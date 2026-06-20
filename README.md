@@ -76,9 +76,11 @@ to edit, click outside to close.
 
 Want media files to open in mpv on double-click (like mpv.net's setup)? Run
 [`tools/file-associations/`](tools/file-associations/)`Register-File-Associations.cmd`.
-It registers **your** `mpv.exe` for ~60 video/audio/image types — per-user (no
-admin), and fully reversible with the matching `Unregister-…` script. Windows
-10/11 then has you confirm the defaults in Settings. See
+A port of mpv.net's registration: it wires **your** `mpv.exe` to ~70
+video/audio/image types + the ytdl/rtsp/srt/srtp protocols — per-user (no admin),
+non-destructive (never overwrites existing associations), and fully reversible
+with the matching `Unregister-…` script. Windows 10/11 then has you confirm the
+defaults in Settings. See
 [`tools/file-associations/README.md`](tools/file-associations/README.md).
 
 ## Optional: native settings window (Windows)
