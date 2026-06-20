@@ -1023,10 +1023,50 @@ default = no
 option = no
 option = yes
 
-name = remember-state
+name = remember-volume
 file = encore
 directory = Program Behavior
-help = Carry player state across sessions (an Encore helper, not native mpv). When enabled, the current volume, mute, fullscreen, border (borderless) and on-top state are written to mpv.conf when you quit, so they become the defaults next launch. Customize which options are saved with 'remember-options' in encore.conf. Default: no
+help = Remember volume across sessions (an Encore helper, not native mpv). When enabled, the current volume and mute state are written to mpv.conf when you quit, so they become the defaults next launch. Default: no
+default = no
+option = no
+option = yes
+
+name = remember-fullscreen
+file = encore
+directory = Program Behavior
+help = Remember fullscreen across sessions (an Encore helper, not native mpv). When enabled, the current fullscreen state is written to mpv.conf when you quit, so it becomes the default next launch. Default: no
+default = no
+option = no
+option = yes
+
+name = remember-border
+file = encore
+directory = Program Behavior
+help = Remember window border (borderless) across sessions (an Encore helper, not native mpv). When enabled, the current border state is written to mpv.conf when you quit, so it becomes the default next launch. Default: no
+default = no
+option = no
+option = yes
+
+name = remember-ontop
+file = encore
+directory = Program Behavior
+help = Remember always-on-top across sessions (an Encore helper, not native mpv). When enabled, the current on-top state is written to mpv.conf when you quit, so it becomes the default next launch. Default: no
+default = no
+option = no
+option = yes
+
+name = remember-window-scale
+file = encore
+directory = Program Behavior
+help = Remember window size (scale) across sessions (an Encore helper, not native mpv). When enabled, the current window scale is written to mpv.conf (as window-scale) when you quit, so it becomes the default next launch. Window position can't be remembered (mpv exposes no current-position property). Default: no
+default = no
+option = no
+option = yes
+
+name = remember-audio-device
+file = encore
+directory = Program Behavior
+help = Remember the selected audio device across sessions (an Encore helper, not native mpv). When enabled, the current audio-device is written to mpv.conf when you quit, so it becomes the default next launch. Default: no
 default = no
 option = no
 option = yes

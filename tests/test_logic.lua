@@ -19,7 +19,7 @@ local content = f:read("*a"); f:close()
 local settings = conf.load(content)
 
 print("=== parser ===")
-check(#settings == 147, "settings count == 147 (got " .. #settings .. ")")
+check(#settings == 152, "settings count == 152 (got " .. #settings .. ")")
 
 -- index a few known settings
 local by = {}
@@ -41,16 +41,18 @@ check(by["process-instance"] == nil, "process-instance removed")
 check(by["dark-mode"] == nil, "dark-mode removed")
 -- former encore-script options are gone now that their features are native mpv
 check(by["recent-count"] == nil, "recent-count removed")
-check(by["remember-volume"] == nil, "remember-volume removed")
 check(by["auto-load-folder"] == nil, "auto-load-folder removed")
 check(by["autofit-image"] == nil, "autofit-image removed")
 -- their native replacements are present as real mpv options
 check(by["autocreate-playlist"] ~= nil, "autocreate-playlist present")
 check(by["save-watch-history"] ~= nil, "save-watch-history present")
 check(by["autofit"] ~= nil, "autofit present")
--- the encore-remember toggle is the one (re-added) file = encore option
-check(by["remember-state"] ~= nil, "remember-state present")
-check(by["remember-state"].file == "encore", "remember-state is file=encore")
+-- the encore-remember per-property toggles are file = encore options
+check(by["remember-state"] == nil, "remember-state removed")
+check(by["remember-volume"] ~= nil, "remember-volume present")
+check(by["remember-volume"].file == "encore", "remember-volume is file=encore")
+check(by["remember-audio-device"] ~= nil, "remember-audio-device present")
+check(by["remember-audio-device"].file == "encore", "remember-audio-device is file=encore")
 
 -- ---- conffile round-trip ----
 print("=== conffile ===")

@@ -7,7 +7,7 @@
 --   package.path = mp.command_native({"expand-path", "~~/script-modules/?.lua"})
 --                  .. ";" .. package.path
 --   local config = require "encore-config"
---   if config.bool("remember-state", false) then ... end
+--   if config.bool("remember-volume", false) then ... end
 
 local mp = require "mp"
 
