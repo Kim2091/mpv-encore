@@ -4,8 +4,9 @@ mpv.net's settings menu, recreated for **vanilla mpv** as a pure-Lua script — 
 .NET, no external dependencies, and nothing to rebase when mpv updates (it lives
 outside the mpv source tree and uses only the stable scripting API).
 
-It reproduces mpv.net's data-driven config editor: 146 setting definitions — all
-real mpv / libplacebo options — organised into a category tree, with live
+It reproduces mpv.net's data-driven config editor: 147 setting definitions
+(146 real mpv / libplacebo options + one `file = encore` toggle, `remember-state`,
+read by the encore-remember helper) organised into a category tree, with live
 search, live-apply, and comment-preserving writes to `mpv.conf`.
 
 ## Install
@@ -57,14 +58,16 @@ can't.
 Because `editor_conf.txt` is kept in mpv.net's format, future additions to
 mpv.net's setting list can be cross-ported by copying the relevant blocks.
 
-## Formerly script-backed options
+## The `file = encore` option
 
-Earlier versions added a few `file = encore` options for features the package
-implemented itself (recent files, auto-load folder, remember volume / audio
-device, content-aware window size). Those are now provided by **native mpv** —
-`--autocreate-playlist`, `--save-watch-history`, `--save-position-on-quit`,
-`--autofit` / `--geometry` — so the editor just exposes those real options and
-writes everything to `mpv.conf`. There are no longer any `encore.conf` settings.
+Most former package-specific options are now provided by **native mpv** —
+recent files (`--save-watch-history`), auto-load folder (`--autocreate-playlist`),
+resume position (`--save-position-on-quit`), window sizing (`--autofit` /
+`--geometry`) — so the editor exposes those real options and writes to `mpv.conf`.
+
+One `file = encore` toggle remains: **`remember-state`**, stored in `encore.conf`
+and read by the **encore-remember** script (which persists volume / fullscreen /
+border etc. to `mpv.conf` on quit — something no single native option does).
 
 mpv.net options that have no mpv equivalent (e.g. `process-instance`,
 `remember-window-position`, the WPF theme options) are omitted so the menu only

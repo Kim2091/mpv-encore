@@ -24,8 +24,9 @@ bindings of its own.
 
 | Script | What it does |
 |--------|--------------|
-| **encore-settings** | Graphical settings editor — 146 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
+| **encore-settings** | Graphical settings editor — 147 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
 | **encore-files** | File operations via native dialogs (Windows): open files, load subtitle/audio, open from clipboard, DVD/Blu-ray |
+| **encore-remember** | Optional (toggle in settings): on quit, writes the current volume / mute / fullscreen / border / on-top state into `mpv.conf` so it carries over to the next launch |
 
 Most of what mpv.net offered is now built into modern mpv, so Encore leans on it
 rather than reimplementing it. The bundled `menu.conf` wires these native
@@ -37,7 +38,8 @@ features into the right-click menu:
   properties viewer, recent files (watch history)** — `select.lua`.
 - **Auto-load a folder as a playlist** — `--autocreate-playlist`.
 - **Content-aware window sizing** — `--autofit` / `--geometry`.
-- **Remember volume across sessions** — `--save-position-on-quit`.
+- **Resume playback position** — `--save-position-on-quit` (per-file; for
+  persisting global state like volume/fullscreen use **encore-remember** above).
 
 ## Requirements
 

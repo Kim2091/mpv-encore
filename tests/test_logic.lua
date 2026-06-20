@@ -19,7 +19,7 @@ local content = f:read("*a"); f:close()
 local settings = conf.load(content)
 
 print("=== parser ===")
-check(#settings == 146, "settings count == 146 (got " .. #settings .. ")")
+check(#settings == 147, "settings count == 147 (got " .. #settings .. ")")
 
 -- index a few known settings
 local by = {}
@@ -48,6 +48,9 @@ check(by["autofit-image"] == nil, "autofit-image removed")
 check(by["autocreate-playlist"] ~= nil, "autocreate-playlist present")
 check(by["save-watch-history"] ~= nil, "save-watch-history present")
 check(by["autofit"] ~= nil, "autofit present")
+-- the encore-remember toggle is the one (re-added) file = encore option
+check(by["remember-state"] ~= nil, "remember-state present")
+check(by["remember-state"].file == "encore", "remember-state is file=encore")
 
 -- ---- conffile round-trip ----
 print("=== conffile ===")

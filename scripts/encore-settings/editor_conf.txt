@@ -1023,6 +1023,14 @@ default = no
 option = no
 option = yes
 
+name = remember-state
+file = encore
+directory = Program Behavior
+help = Carry player state across sessions (an Encore helper, not native mpv). When enabled, the current volume, mute, fullscreen, border (borderless) and on-top state are written to mpv.conf when you quit, so they become the defaults next launch. Customize which options are saved with 'remember-options' in encore.conf. Default: no
+default = no
+option = no
+option = yes
+
 name = reset-on-next-file
 file = mpv
 directory = Program Behavior
