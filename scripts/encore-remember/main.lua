@@ -34,40 +34,70 @@ local function format_value(v)
     return tostring(v)
 end
 
--- Update `key=value` for each pair in mpv.conf, in place, preserving comments,
--- other options, blank lines and formatting. Keys not already present are
--- appended; commented-out lines are left alone.
+-- Update `key=value` for each pair in mpv.conf, only in the GLOBAL (section-less)
+-- scope, in place. Comments, other options, `[sections]`/`[profiles]`, blank
+-- lines, the file's line endings and a leading BOM are all preserved. Keys not
+-- already present are inserted just before the first `[section]` (never inside a
+-- profile, where a global option could be mis-scoped or rejected). The write goes
+-- through a temp file + rename, so a crash mid-write can't truncate the config.
 local function persist(pairs_list)
+    local raw = ""
+    local f = io.open(MPV_CONF, "rb")
+    if f then raw = f:read("*a") or ""; f:close() end
+
+    local bom = ""
+    if raw:sub(1, 3) == "\239\187\191" then bom = raw:sub(1, 3); raw = raw:sub(4) end
+    local nl = raw:find("\r\n", 1, true) and "\r\n" or "\n"
+
     local lines = {}
-    local f = io.open(MPV_CONF, "r")
-    if f then
-        for l in f:lines() do lines[#lines + 1] = (l:gsub("\r$", "")) end
-        f:close()
+    if raw ~= "" then
+        local norm = raw:gsub("\r\n", "\n"):gsub("\r", "\n")
+        if norm:sub(-1) ~= "\n" then norm = norm .. "\n" end
+        for line in norm:gmatch("(.-)\n") do lines[#lines + 1] = line end
+    end
+
+    -- last line index of the global region (everything before the first section)
+    local global_end = #lines
+    for i, l in ipairs(lines) do
+        if l:match("^%s*%[") then global_end = i - 1; break end
     end
 
     for _, kv in ipairs(pairs_list) do
         local key, val = kv[1], kv[2]
         local esc = key:gsub("%-", "%%-")          -- option names use '-'
         local replaced = false
-        for i, l in ipairs(lines) do
+        for i = 1, global_end do
+            local l = lines[i]
             if l:gsub("^%s+", ""):sub(1, 1) ~= "#" and l:match("^%s*" .. esc .. "%s*=") then
-                local indent = l:match("^(%s*)")
-                lines[i] = indent .. key .. "=" .. val
+                lines[i] = (l:match("^(%s*)")) .. key .. "=" .. val
                 replaced = true
                 break
             end
         end
-        if not replaced then lines[#lines + 1] = key .. "=" .. val end
+        if not replaced then
+            table.insert(lines, global_end + 1, key .. "=" .. val)
+            global_end = global_end + 1
+        end
     end
 
-    local w, err = io.open(MPV_CONF, "w")
+    -- atomic-ish replace: write a temp file, then rename over the original
+    local tmp = MPV_CONF .. ".encore-tmp"
+    local w, err = io.open(tmp, "wb")
     if not w then
-        msg.error("could not write " .. MPV_CONF .. ": " .. tostring(err))
+        msg.error("could not write " .. tmp .. ": " .. tostring(err))
         return
     end
-    w:write(table.concat(lines, "\n"))
-    if #lines > 0 then w:write("\n") end
+    w:write(bom .. table.concat(lines, nl))
+    if #lines > 0 then w:write(nl) end
     w:close()
+
+    os.remove(MPV_CONF)                            -- Windows rename won't overwrite
+    local ok, rerr = os.rename(tmp, MPV_CONF)
+    if not ok then
+        msg.error("could not replace mpv.conf (" .. tostring(rerr) ..
+                  "); new content saved at " .. tmp)
+        return
+    end
     msg.verbose("remembered " .. #pairs_list .. " option(s) to mpv.conf")
 end
 
@@ -80,7 +110,10 @@ mp.register_event("shutdown", function()
     local pairs_list = {}
     for name in list:gmatch("[^,%s]+") do
         local v = mp.get_property_native(name)
-        if v ~= nil then
+        local t = type(v)
+        -- only persist scalar values; a list/table-typed option would otherwise
+        -- write a Lua table address that mpv rejects on next launch.
+        if t == "boolean" or t == "number" or t == "string" then
             pairs_list[#pairs_list + 1] = { name, format_value(v) }
         end
     end
