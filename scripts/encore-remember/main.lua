@@ -5,15 +5,17 @@
 -- toggle is on, the current value of the matching player properties is written
 -- into mpv.conf on quit, so they become the defaults next time.
 --
--- Each thing you can remember is a separate per-property toggle (mpv.net-style),
--- enabled from the settings editor (Program Behavior) or by hand in encore.conf:
+-- A master toggle, remember-state, turns the feature on. While it's on, each
+-- aspect has its own toggle (all default ON) -- the settings editor only reveals
+-- these once remember-state is enabled. In encore.conf:
 --
---     remember-volume=yes          # persists volume AND mute (grouped)
---     remember-fullscreen=yes      # persists fullscreen
---     remember-border=yes          # persists border (borderless)
---     remember-ontop=yes           # persists ontop
---     remember-window-scale=yes    # reads current-window-scale, writes window-scale
---     remember-audio-device=yes    # persists audio-device
+--     remember-state=yes           # master switch (required for any of the below)
+--     remember-volume=no           # then opt OUT of any aspect (each defaults on):
+--     remember-fullscreen=no       #   volume (+ mute)
+--     remember-border=no           #   fullscreen / border (borderless) / ontop
+--     remember-ontop=no            #   window-scale / audio-device
+--     remember-window-scale=no     # window-scale reads current-window-scale and
+--     remember-audio-device=no     # writes the settable window-scale option
 --
 -- Window POSITION can't be remembered: mpv exposes no current-position property,
 -- so there is nothing to read back at quit (window scale/size can, via
@@ -158,10 +160,12 @@ end
 -- On quit: for each enabled toggle, snapshot its properties into mpv.conf.
 mp.register_event("shutdown", function()
     config.reload()                                 -- pick up mid-session toggles
+    if not config.bool("remember-state", false) then return end   -- master switch off
 
     local pairs_list = {}
     for _, group in ipairs(GROUPS) do
-        if config.bool(group.opt, false) then
+        -- once the master is on, each aspect defaults ON (opt out per-toggle)
+        if config.bool(group.opt, true) then
             for _, p in ipairs(group.props) do
                 collect(p.read, p.write, pairs_list)
             end

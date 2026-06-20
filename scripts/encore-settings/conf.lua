@@ -135,6 +135,10 @@ function M.load(content)
             setting.help = section_get(section, "help")
             setting.url = section_get(section, "url")
             setting.type = section_get(section, "type")
+            -- optional: only show this setting when another setting (by name) is
+            -- truthy. Used for master/sub toggles (e.g. remember-* depends on
+            -- remember-state).
+            setting.depends = section_get(section, "depends")
 
             local width = section_get(section, "width")
             if width then setting.width = tonumber(width) or 0 end

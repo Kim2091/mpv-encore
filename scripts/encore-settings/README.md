@@ -4,10 +4,11 @@ mpv.net's settings menu, recreated for **vanilla mpv** as a pure-Lua script — 
 .NET, no external dependencies, and nothing to rebase when mpv updates (it lives
 outside the mpv source tree and uses only the stable scripting API).
 
-It reproduces mpv.net's data-driven config editor: 152 setting definitions
-(146 real mpv / libplacebo options + six `file = encore` toggles read by the
-encore-remember helper) organised into a category tree, with live
-search, live-apply, and comment-preserving writes to `mpv.conf`.
+It reproduces mpv.net's data-driven config editor: 153 setting definitions
+(146 real mpv / libplacebo options + seven `file = encore` toggles read by the
+encore-remember helper — a master plus six per-aspect toggles it reveals)
+organised into a category tree, with live search, live-apply, and
+comment-preserving writes to `mpv.conf`.
 
 ## Install
 
@@ -65,12 +66,14 @@ recent files (`--save-watch-history`), auto-load folder (`--autocreate-playlist`
 resume position (`--save-position-on-quit`), window sizing (`--autofit` /
 `--geometry`) — so the editor exposes those real options and writes to `mpv.conf`.
 
-Six `file = encore` toggles remain: **`remember-volume`**,
+Seven `file = encore` toggles remain, read by the **encore-remember** script
+(which persists the matching properties to `mpv.conf` on quit — something no
+single native option does). A master, **`remember-state`** (default off), turns
+the feature on; six per-aspect toggles — **`remember-volume`** (volume + mute),
 **`remember-fullscreen`**, **`remember-border`**, **`remember-ontop`**,
-**`remember-window-scale`** and **`remember-audio-device`**, stored in
-`encore.conf` and read by the **encore-remember** script (which persists the
-matching properties — volume/mute, fullscreen, border, on-top, window size and
-audio device — to `mpv.conf` on quit, something no single native option does).
+**`remember-window-scale`** and **`remember-audio-device`** — `depend` on it, so
+the editor only shows them once the master is on, and each defaults on at that
+point. (`depends = <name>` is the editor's conditional-visibility field.)
 
 mpv.net options that have no mpv equivalent (e.g. `process-instance`,
 `remember-window-position`, the WPF theme options) are omitted so the menu only

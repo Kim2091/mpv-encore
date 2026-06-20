@@ -19,7 +19,7 @@ local content = f:read("*a"); f:close()
 local settings = conf.load(content)
 
 print("=== parser ===")
-check(#settings == 152, "settings count == 152 (got " .. #settings .. ")")
+check(#settings == 153, "settings count == 153 (got " .. #settings .. ")")
 
 -- index a few known settings
 local by = {}
@@ -47,12 +47,17 @@ check(by["autofit-image"] == nil, "autofit-image removed")
 check(by["autocreate-playlist"] ~= nil, "autocreate-playlist present")
 check(by["save-watch-history"] ~= nil, "save-watch-history present")
 check(by["autofit"] ~= nil, "autofit present")
--- the encore-remember per-property toggles are file = encore options
-check(by["remember-state"] == nil, "remember-state removed")
+-- encore-remember: a master toggle + per-property sub-toggles (file = encore).
+-- The master defaults off; the subs default on and are hidden until the master
+-- is enabled (depends = remember-state).
+check(by["remember-state"] ~= nil, "remember-state master present")
+check(by["remember-state"].file == "encore", "remember-state is file=encore")
+check(by["remember-state"].default == "no", "remember-state default=no")
 check(by["remember-volume"] ~= nil, "remember-volume present")
 check(by["remember-volume"].file == "encore", "remember-volume is file=encore")
-check(by["remember-audio-device"] ~= nil, "remember-audio-device present")
-check(by["remember-audio-device"].file == "encore", "remember-audio-device is file=encore")
+check(by["remember-volume"].default == "yes", "remember-volume default=yes")
+check(by["remember-volume"].depends == "remember-state", "remember-volume depends on remember-state")
+check(by["remember-audio-device"].depends == "remember-state", "remember-audio-device depends on remember-state")
 
 -- ---- conffile round-trip ----
 print("=== conffile ===")

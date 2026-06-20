@@ -24,9 +24,9 @@ bindings of its own.
 
 | Script | What it does |
 |--------|--------------|
-| **encore-settings** | Graphical settings editor — 152 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
+| **encore-settings** | Graphical settings editor — 153 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
 | **encore-files** | File operations via native dialogs (Windows): open files, load subtitle/audio, open from clipboard, DVD/Blu-ray |
-| **encore-remember** | Optional, with per-property toggles in settings: on quit, writes the current volume / mute, fullscreen, border, on-top, window size and audio device into `mpv.conf` so each carries over to the next launch |
+| **encore-remember** | Optional (off by default): a master toggle in Settings reveals per-aspect toggles — on quit, writes the current volume / mute, fullscreen, border, on-top, window size and audio device into `mpv.conf` so each carries over to the next launch |
 
 Most of what mpv.net offered is now built into modern mpv, so Encore leans on it
 rather than reimplementing it. The bundled `menu.conf` wires these native

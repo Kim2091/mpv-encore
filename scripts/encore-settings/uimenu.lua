@@ -95,6 +95,9 @@ function M.open(settings, on_change)
     self.settings = settings
     self.tree = build_tree(settings)
     self.on_change = on_change or function() end
+    -- name -> setting, for resolving `depends` (conditional visibility)
+    self.by_name = {}
+    for _, s in ipairs(settings) do self.by_name[s.name] = s end
     -- Friendlier default: expand the top level of categories so the user sees
     -- the major sections at a glance (their sub-categories stay collapsed).
     for _, name in ipairs(self.tree.order) do
@@ -208,6 +211,21 @@ function Menu:current_node()
     return row and row.ref or nil
 end
 
+local function truthy(v)
+    v = (tostring(v or "")):lower()
+    return v == "yes" or v == "true" or v == "1"
+end
+
+-- A setting may declare `depends = <other setting name>`; it is only shown while
+-- that other setting is currently truthy. Used for master/sub toggles, e.g. the
+-- per-option remember-* toggles depend on the remember-state master.
+function Menu:visible(s)
+    if not s.depends then return true end
+    local dep = self.by_name[s.depends]
+    if not dep then return true end          -- unknown dependency: don't hide
+    return truthy(dep.value or dep.default)
+end
+
 -- Build self.list_rows: depends on mode.
 --   options : the option choices for the setting being edited
 --   search  : flat matches across ALL settings (each tagged with its category)
@@ -227,7 +245,7 @@ function Menu:rebuild_list(keep_sel)
         local q = self.query:lower()
         for _, s in ipairs(self.settings) do
             local hay = (s.name .. " " .. (s.directory or "") .. " " .. (s.help or "")):lower()
-            if hay:find(q, 1, true) then
+            if self:visible(s) and hay:find(q, 1, true) then
                 rows[#rows + 1] = { kind = "setting", ref = s,
                     marker = setting_marker(s), hint = s.directory or "" }
             end
@@ -236,8 +254,10 @@ function Menu:rebuild_list(keep_sel)
         local node = self:current_node()
         if node then
             for _, s in ipairs(node.settings) do
-                rows[#rows + 1] = { kind = "setting", ref = s,
-                    marker = setting_marker(s) }
+                if self:visible(s) then
+                    rows[#rows + 1] = { kind = "setting", ref = s,
+                        marker = setting_marker(s) }
+                end
             end
         end
     end
