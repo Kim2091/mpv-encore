@@ -1,7 +1,7 @@
 # mpv-settings — native settings window (optional)
 
 > **Status: optional alternative.** The default settings UI is the cross-platform
-> two-pane OSD menu (`scripts/encore-settings/uimenu.lua`). This native Win32
+> two-pane OSD menu (`script-modules/encore-panel.lua`). This native Win32
 > window is kept as a Windows-only alternative / reference. It is **not** launched
 > by the package by default.
 

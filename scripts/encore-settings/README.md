@@ -28,7 +28,8 @@ c  script-binding encore_settings/open
 
 ## Usage
 
-A custom OSD menu (`uimenu.lua`) drawn with ASS, so it can show a live
+A custom OSD menu (`script-modules/encore-panel.lua`, a shared two-pane renderer
+also used by the shader manager) drawn with ASS, so it can show a live
 description panel — what mpv.net's GUI did, which mpv's built-in console menu
 can't.
 
@@ -53,7 +54,7 @@ can't.
 | `Resources/editor_conf.txt`       | `editor_conf.txt` (copied verbatim — same source of truth) |
 | `Conf.cs` (`ConfParser`, `LoadConf`) | `conf.lua`     |
 | `ConfWindow` config I/O (`LoadConf`/`GetContent`/`EscapeValue`/libplacebo) | `conffile.lua` |
-| `ConfWindow` + WPF controls + search | `uimenu.lua` (custom ASS-drawn two-pane menu) |
+| `ConfWindow` + WPF controls + search | `encore-panel.lua` (shared ASS-drawn two-pane menu) |
 | app wiring / live-apply / save    | `main.lua`        |
 
 Because `editor_conf.txt` is kept in mpv.net's format, future additions to

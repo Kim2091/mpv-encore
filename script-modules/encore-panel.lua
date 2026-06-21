@@ -1,19 +1,42 @@
--- uimenu.lua — a custom ASS-drawn settings menu.
+-- encore-panel.lua — a reusable ASS-drawn two-pane menu (tree + list + detail).
 --
--- The built-in mp.input.select menu can't show a per-item description or update
--- it as the selection moves, and its type-to-filter only covers the current
--- list. This module draws its own OSD menu so it can provide what mpv.net's GUI
--- did: a live help/description panel (tooltips), type-anywhere global search,
--- and proper back navigation through the category tree.
+-- This is the rendering/navigation engine extracted from the settings menu so
+-- more than one feature can share the exact same look and behaviour (the
+-- settings editor and the shader manager both reference it). It is purely a UI
+-- engine: it knows nothing about settings or shaders. A host supplies a "model"
+-- describing its items and a few presentation hooks; the defaults reproduce the
+-- settings editor's behaviour so that host needs to override almost nothing.
 --
 -- Layout is master–detail:
 --   * left pane  = the category tree ONLY (expand/collapse sub-categories);
---   * right-top  = the selected category's direct settings (name = value);
---   * right-bot  = the live help/description for the focused setting.
--- Focus is either the tree (left) or the settings list (right); the active pane
--- gets the bright accent selection bar, the inactive one a dim outline.
+--   * right-top  = the selected category's direct items (name = value);
+--   * right-bot  = a live detail/help panel for the focused item.
+-- Focus is either the tree (left) or the item list (right); the active pane gets
+-- the bright accent selection bar, the inactive one a dim outline.
 --
--- It still uses mp.input.get for free-text value entry (which needs a real text
+-- The model passed to M.open(model) may set:
+--   title           header subtitle after "Encore" (default "settings")
+--   items           array of host item objects (required)
+--   on_change(item) called after a value commit (default no-op)
+--   category_of(menu,item) -> "a/b/c" tree path     (default item.directory)
+--   label_of(menu,item)    -> display name          (default prettify(item.name))
+--   value_of(menu,item)    -> value string|nil      (default item.value/(unset))
+--   marker_of(menu,item)   -> status glyph          (default changed/non-default)
+--   hint_of(menu,item)     -> search-row hint       (default item.directory)
+--   search_text(menu,item) -> haystack string       (default name+dir+help)
+--   visible(menu,item)     -> bool                   (default `depends` logic)
+--   detail(menu,item)      -> array of detail blocks (default settings layout)
+--   on_activate(menu,item) -> handle ENTER/click     (default settings edit)
+--   empty_detail           placeholder when nothing focused
+--
+-- Detail blocks (returned by model.detail) are plain tables:
+--   {t="title", text=}   {t="sub", text=}   {t="gap"}
+--   {t="text",  text=, c="text"|"dim"|"faint"}   {t="link", text=, url=}
+--
+-- Hosts drive custom edit flows from on_activate using the public helpers
+-- menu:choose{...}, menu:ask_text{...} and menu:refresh().
+--
+-- It uses mp.input.get for free-text value entry (which needs a real text
 -- cursor); everything else is handled here with forced key bindings.
 
 local assdraw = require "mp.assdraw"
@@ -21,7 +44,8 @@ local input = require "mp.input"
 
 local M = {}
 
--- Package version, shown in the menu header alongside the mpv version.
+-- Package version, shown in the menu header alongside the mpv version. Single
+-- source of truth for the whole package — bump per release.
 local ENCORE_VERSION = "1.1.3"
 
 -- mpv's version string with the trailing git hash dropped, e.g.
@@ -54,17 +78,149 @@ local function open_url(url)
 end
 
 -- ---------------------------------------------------------------------------
+-- Default presentation helpers (the settings editor's behaviour)
+-- ---------------------------------------------------------------------------
+
+local function changed(s) return (s.value or "") ~= (s.start_value or "") end
+local function non_default(s) return (s.value or "") ~= (s.default or "") end
+
+local function value_str(s)
+    local v = s.value
+    if v == nil or v == "" then return "(unset)" end
+    return v
+end
+
+-- Words that should render as acronyms / special cases rather than Title-Case.
+local ACRONYM = {
+    gpu = "GPU", hdr = "HDR", sdr = "SDR", vo = "VO", ao = "AO", api = "API",
+    osd = "OSD", osc = "OSC", fps = "FPS", rgb = "RGB", yuv = "YUV", icc = "ICC",
+    lut = "LUT", lut3d = "LUT3D", csp = "CSP", ar = "AR", uhd = "UHD", id = "ID",
+    url = "URL", png = "PNG", jpeg = "JPEG", jpg = "JPG", hwdec = "HWDEC",
+    dxva2 = "DXVA2", d3d11va = "D3D11VA", vaapi = "VAAPI", vdpau = "VDPAU",
+    cuda = "CUDA", nvdec = "NVDEC", pq = "PQ", hlg = "HLG", av1 = "AV1",
+    hevc = "HEVC", ["3d"] = "3D", ["2d"] = "2D", ictcp = "ICtCp", ipt = "IPT",
+    -- a couple of friendlier expansions
+    exts = "Extensions",
+}
+
+-- Turn a raw option name into a friendly display label: split on dashes /
+-- underscores, map known acronyms, Title-Case the rest ("hdr-compute-peak" ->
+-- "HDR Compute Peak", "video-sync" -> "Video Sync"). Display only.
+local function prettify(name)
+    local out = {}
+    for word in tostring(name):gmatch("[^%-_]+") do
+        local lw = word:lower()
+        if ACRONYM[lw] then
+            out[#out + 1] = ACRONYM[lw]
+        else
+            out[#out + 1] = word:sub(1, 1):upper() .. word:sub(2)
+        end
+    end
+    return table.concat(out, " ")
+end
+
+-- expose prettify to hosts (e.g. for chooser titles) without re-implementing it
+M.prettify = prettify
+
+-- The little status glyph shown to the left of a row.
+--   *  modified this session   ●  differs from default   (blank otherwise)
+local function setting_marker(s)
+    if changed(s) then return "*" end
+    if non_default(s) then return "●" end
+    return ""
+end
+
+local function truthy(v)
+    v = (tostring(v or "")):lower()
+    return v == "yes" or v == "true" or v == "1"
+end
+
+-- The model defaults. M.open merges the host's model over these so every hook
+-- always resolves. Each takes (menu, item) so hosts can reach menu state.
+local DEFAULTS = {
+    title = "settings",
+    version = ENCORE_VERSION,
+    on_change = function() end,
+    empty_detail = "Select an item to see its description.",
+
+    category_of = function(_, item) return item.directory or "" end,
+    label_of    = function(_, item) return prettify(item.name) end,
+    value_of    = function(_, item) return value_str(item) end,
+    marker_of   = function(_, item) return setting_marker(item) end,
+    hint_of     = function(_, item) return item.directory or "" end,
+
+    search_text = function(_, item)
+        return (item.name .. " " .. (item.directory or "") .. " " .. (item.help or "")):lower()
+    end,
+
+    -- A setting may declare `depends = <other item name>`; shown only while that
+    -- other item is currently truthy (master/sub toggles).
+    visible = function(menu, item)
+        if not item.depends then return true end
+        local dep = menu.by_name[item.depends]
+        if not dep then return true end            -- unknown dependency: don't hide
+        return truthy(dep.value or dep.default)
+    end,
+
+    -- The settings editor's detail panel: friendly name, raw name, value, help,
+    -- meta line, and a clickable manual link.
+    detail = function(menu, s)
+        local b = {}
+        b[#b + 1] = { t = "title", text = prettify(s.name) }
+        b[#b + 1] = { t = "sub", text = s.name }
+        b[#b + 1] = { t = "gap" }
+        b[#b + 1] = { t = "text", text = "value:  " .. value_str(s) }
+        if s.help and s.help ~= "" then
+            b[#b + 1] = { t = "gap" }
+            b[#b + 1] = { t = "text", text = (s.help:gsub("/n", " ")) }
+        end
+        b[#b + 1] = { t = "gap" }
+        local meta = {}
+        if s.default and s.default ~= "" then meta[#meta + 1] = "default: " .. s.default end
+        if s.type and s.type ~= "" then meta[#meta + 1] = "type: " .. s.type end
+        meta[#meta + 1] = "file: " .. (s.file or "?")
+        b[#b + 1] = { t = "text", text = table.concat(meta, "      "), c = "dim" }
+        if s.url and s.url ~= "" then
+            b[#b + 1] = { t = "link", text = s.url, url = s.url }
+        end
+        return b
+    end,
+
+    -- The settings editor's edit flow: combobox for option-kind, free text else.
+    on_activate = function(menu, s)
+        if s.kind == "option" then
+            local opts = {}
+            for _, o in ipairs(s.options) do
+                opts[#opts + 1] = { label = o.text or o.name, value = o.name, help = o.help }
+            end
+            menu:choose{
+                title = "Choose: " .. prettify(s.name),
+                options = opts, current = s.value,
+                detail_item = s, return_item = s,
+                on_pick = function(v) s.value = v; menu.on_change(s) end,
+            }
+        else
+            local hint = s.type and (" [" .. s.type .. "]") or ""
+            menu:ask_text{
+                prompt = s.name .. hint, default = s.value, return_item = s,
+                on_submit = function(text) s.value = text; menu.on_change(s) end,
+            }
+        end
+    end,
+}
+
+-- ---------------------------------------------------------------------------
 -- Category tree
 -- ---------------------------------------------------------------------------
 
-local function build_tree(settings)
+local function build_tree(menu)
     local root = { name = "", path = "", children = {}, order = {}, settings = {},
                    depth = -1, expanded = true }
-    for _, s in ipairs(settings) do
+    for _, s in ipairs(menu.settings) do
         local node = root
         local path = ""
         local depth = 0
-        for part in (s.directory or ""):gmatch("[^/]+") do
+        for part in (menu.model.category_of(menu, s) or ""):gmatch("[^/]+") do
             path = path == "" and part or (path .. "/" .. part)
             if not node.children[part] then
                 local child = { name = part, path = path, children = {}, order = {},
@@ -90,14 +246,15 @@ Menu.__index = Menu
 
 local VISIBLE_ROWS = 16
 
-function M.open(settings, on_change)
+function M.open(model)
     local self = setmetatable({}, Menu)
-    self.settings = settings
-    self.tree = build_tree(settings)
-    self.on_change = on_change or function() end
-    -- name -> setting, for resolving `depends` (conditional visibility)
+    self.model = setmetatable(model or {}, { __index = DEFAULTS })
+    self.settings = self.model.items or {}
+    self.on_change = self.model.on_change
+    -- name -> item, for resolving `depends` (conditional visibility)
     self.by_name = {}
-    for _, s in ipairs(settings) do self.by_name[s.name] = s end
+    for _, s in ipairs(self.settings) do self.by_name[s.name] = s end
+    self.tree = build_tree(self)
     -- Friendlier default: expand the top level of categories so the user sees
     -- the major sections at a glance (their sub-categories stay collapsed).
     for _, name in ipairs(self.tree.order) do
@@ -106,82 +263,40 @@ function M.open(settings, on_change)
     self.query = ""
     self.focus = "tree"              -- "tree" | "list"
     self.mode = "browse"             -- "browse" | "options" | "search"
-    self.option_setting = nil
+    self.choose_state = nil
 
     -- two independent scroll/selection cursors
     self.tree_sel = 1
     self.tree_scroll = 0
     self.list_sel = 1
     self.list_scroll = 0
-    self.help_scroll = 0             -- scroll offset for the help/description pane
-    self._help_for = nil             -- setting the help_scroll currently applies to
+    self.help_scroll = 0             -- scroll offset for the detail/help pane
+    self._help_for = nil             -- item the help_scroll currently applies to
 
     self.overlay = mp.create_osd_overlay("ass-events")
     self.closed = false
     self:bind_keys()
     self:rebuild_tree()
     self:rebuild_list()
+    -- Some menus (a single category, e.g. bookmarks) read better opening straight
+    -- in the item list rather than on the one-entry tree.
+    if self.model.start_in_list and #self.list_rows > 0 then self.focus = "list" end
     self:render()
     return self
 end
 
--- ---------------------------------------------------------------------------
--- Row labels / formatting
--- ---------------------------------------------------------------------------
-
-local function changed(s) return (s.value or "") ~= (s.start_value or "") end
-local function non_default(s) return (s.value or "") ~= (s.default or "") end
-
-local function value_of(s)
-    local v = s.value
-    if v == nil or v == "" then return "(unset)" end
-    return v
-end
-
--- Words that should render as acronyms / special cases rather than Title-Case.
-local ACRONYM = {
-    gpu = "GPU", hdr = "HDR", sdr = "SDR", vo = "VO", ao = "AO", api = "API",
-    osd = "OSD", osc = "OSC", fps = "FPS", rgb = "RGB", yuv = "YUV", icc = "ICC",
-    lut = "LUT", lut3d = "LUT3D", csp = "CSP", ar = "AR", uhd = "UHD", id = "ID",
-    url = "URL", png = "PNG", jpeg = "JPEG", jpg = "JPG", hwdec = "HWDEC",
-    dxva2 = "DXVA2", d3d11va = "D3D11VA", vaapi = "VAAPI", vdpau = "VDPAU",
-    cuda = "CUDA", nvdec = "NVDEC", pq = "PQ", hlg = "HLG", av1 = "AV1",
-    hevc = "HEVC", ["3d"] = "3D", ["2d"] = "2D", ictcp = "ICtCp", ipt = "IPT",
-    -- a couple of friendlier expansions
-    exts = "Extensions",
-}
-
--- Turn a raw option name into a friendly display label: split on dashes /
--- underscores, map known acronyms, Title-Case the rest ("hdr-compute-peak" ->
--- "HDR Compute Peak", "video-sync" -> "Video Sync"). Display only — the real
--- s.name is kept untouched for matching/saving/applying.
-local function prettify(name)
-    local out = {}
-    for word in tostring(name):gmatch("[^%-_]+") do
-        local lw = word:lower()
-        if ACRONYM[lw] then
-            out[#out + 1] = ACRONYM[lw]
-        else
-            out[#out + 1] = word:sub(1, 1):upper() .. word:sub(2)
-        end
-    end
-    return table.concat(out, " ")
-end
-
--- The little status glyph shown to the left of a setting row.
---   *  modified this session   ●  differs from default   (blank otherwise)
-local function setting_marker(s)
-    if changed(s) then return "*" end
-    if non_default(s) then return "●" end
-    return ""
-end
+-- Convenience wrappers so render/list code reads cleanly.
+function Menu:label(s)  return self.model.label_of(self, s) end
+function Menu:val(s)    return self.model.value_of(self, s) end
+function Menu:mark(s)   return self.model.marker_of(self, s) end
+function Menu:visible(s) return self.model.visible(self, s) end
 
 -- ---------------------------------------------------------------------------
 -- Row list construction
 -- ---------------------------------------------------------------------------
 
--- Walk the tree depth-first, emitting one row per category node (settings are
--- NOT shown here — they live in the right pane).
+-- Walk the tree depth-first, emitting one row per category node (items are NOT
+-- shown here — they live in the right pane).
 function Menu:flatten_tree(node, rows)
     for _, name in ipairs(node.order) do
         local child = node.children[name]
@@ -211,43 +326,26 @@ function Menu:current_node()
     return row and row.ref or nil
 end
 
-local function truthy(v)
-    v = (tostring(v or "")):lower()
-    return v == "yes" or v == "true" or v == "1"
-end
-
--- A setting may declare `depends = <other setting name>`; it is only shown while
--- that other setting is currently truthy. Used for master/sub toggles, e.g. the
--- per-option remember-* toggles depend on the remember-state master.
-function Menu:visible(s)
-    if not s.depends then return true end
-    local dep = self.by_name[s.depends]
-    if not dep then return true end          -- unknown dependency: don't hide
-    return truthy(dep.value or dep.default)
-end
-
 -- Build self.list_rows: depends on mode.
---   options : the option choices for the setting being edited
---   search  : flat matches across ALL settings (each tagged with its category)
---   browse  : the direct settings of the currently-selected tree node
+--   options : the choices for the chooser currently open
+--   search  : flat matches across ALL items (each tagged with its category)
+--   browse  : the direct items of the currently-selected tree node
 -- `keep_sel` preserves list_sel where sensible; otherwise it resets to 1.
 function Menu:rebuild_list(keep_sel)
     local rows = {}
 
     if self.mode == "options" then
-        local s = self.option_setting
-        for _, opt in ipairs(s.options) do
-            local sel = (opt.name == s.value)
-            rows[#rows + 1] = { kind = "option", label = opt.text or opt.name,
-                                ref = opt, hint = opt.help, dot = sel }
+        local cs = self.choose_state
+        for _, opt in ipairs(cs.options) do
+            rows[#rows + 1] = { kind = "option", label = opt.label or opt.value,
+                                ref = opt, hint = opt.help, dot = (opt.value == cs.current) }
         end
     elseif self.query ~= "" then
         local q = self.query:lower()
         for _, s in ipairs(self.settings) do
-            local hay = (s.name .. " " .. (s.directory or "") .. " " .. (s.help or "")):lower()
-            if self:visible(s) and hay:find(q, 1, true) then
+            if self:visible(s) and self.model.search_text(self, s):find(q, 1, true) then
                 rows[#rows + 1] = { kind = "setting", ref = s,
-                    marker = setting_marker(s), hint = s.directory or "" }
+                    marker = self:mark(s), hint = self.model.hint_of(self, s) }
             end
         end
     else
@@ -255,8 +353,7 @@ function Menu:rebuild_list(keep_sel)
         if node then
             for _, s in ipairs(node.settings) do
                 if self:visible(s) then
-                    rows[#rows + 1] = { kind = "setting", ref = s,
-                        marker = setting_marker(s) }
+                    rows[#rows + 1] = { kind = "setting", ref = s, marker = self:mark(s) }
                 end
             end
         end
@@ -306,9 +403,9 @@ local function wrap(text, width)
     return table.concat(out, "\\N")
 end
 
--- The setting whose help should be shown in the bottom-right pane.
+-- The item whose detail should be shown in the bottom-right pane.
 function Menu:focused_setting()
-    if self.mode == "options" then return self.option_setting end
+    if self.mode == "options" then return self.choose_state and self.choose_state.detail_item end
     local row = self.list_rows[self.list_sel]
     if row and row.kind == "setting" then return row.ref end
     return nil
@@ -316,8 +413,7 @@ end
 
 -- Colours are ASS BGR (&HBBGGRR&). Tuned to match mpv's native (Windows 11)
 -- context menu: flat dark-grey panels, white text, a neutral grey hover/
--- selection bar, and a single restrained blue accent reserved for state (the
--- "modified" marker) — no warm tint.
+-- selection bar, and a single restrained blue accent reserved for state.
 local C_PANEL   = "&H2B2B2B&"   -- panel fill (#2B2B2B)
 local C_RIGHT   = "&H2F2F2F&"   -- slightly lighter detail-pane fill (#2F2F2F)
 local C_TEXT    = "&HF5F5F5&"   -- near-white body text
@@ -334,8 +430,8 @@ local C_FOOT    = "&HB0B0B0&"   -- footer status-bar text
 -- tree hierarchy tiers
 local C_TOPHEAD  = "&HFFFFFF&"  -- top-level category text (bright white, bold)
 local C_SUBHEAD  = "&HD0D0D0&"  -- sub-category text (light grey, bold)
-local C_SETNAME  = "&HE0E0E0&"  -- setting name
-local C_SETVAL   = "&H9D9D9D&"  -- setting value (dimmer)
+local C_SETNAME  = "&HE0E0E0&"  -- item name
+local C_SETVAL   = "&H9D9D9D&"  -- item value (dimmer)
 
 -- Truncate a plain string to at most `n` characters, appending an ellipsis.
 local function truncate(s, n)
@@ -395,9 +491,9 @@ function Menu:render()
     local treeTop = bodyTop
     local treeBot = bodyBot
 
-    -- the right pane is split: settings list on top, help on the bottom. Give
-    -- the list only as much height as it needs, so short categories leave plenty
-    -- of room for the description; cap it so long lists still scroll.
+    -- the right pane is split: item list on top, help on the bottom. Give the
+    -- list only as much height as it needs, so short categories leave plenty of
+    -- room for the description; cap it so long lists still scroll.
     local bodyH = bodyBot - bodyTop
     local nList = #self.list_rows
     local listCap  = I(bodyH * 0.52)
@@ -444,7 +540,6 @@ function Menu:render()
     local footSepY = bodyBot + I(foot_fs * 0.5)
 
     -- 1) background panel (left + right tinted differently) with subtle shadow.
-    -- Near-opaque so it reads as a solid native menu surface rather than a HUD.
     box(boxL + 3, boxT + 3, boxR + 3, boxB + 3, "&H000000&", "&H50&")  -- drop shadow
     box(boxL, boxT, boxR, boxB, C_PANEL, "&H0A&")
     box(divX, boxT, boxR, footSepY, C_RIGHT, "&H0A&")
@@ -518,7 +613,7 @@ function Menu:render()
     end
 
     -- =====================================================================
-    -- RIGHT-TOP PANE — settings list (or search results / option choices)
+    -- RIGHT-TOP PANE — item list (or search results / chooser options)
     -- =====================================================================
     local lTotal = #self.list_rows
     local lFrom = self.list_scroll + 1
@@ -527,7 +622,7 @@ function Menu:render()
     -- right list label / breadcrumb
     local listTitle
     if self.mode == "options" then
-        listTitle = "Choose: " .. prettify(self.option_setting.name)
+        listTitle = self.choose_state.title or "Choose"
     elseif self.query ~= "" then
         listTitle = string.format("Search results (%d)", lTotal)
     else
@@ -555,8 +650,8 @@ function Menu:render()
 
     if lTotal == 0 then
         a:new_event()
-        local msg = self.query ~= "" and ("No settings match “" .. self.query .. "”.")
-            or "This category has no direct settings."
+        local msg = self.query ~= "" and ("No items match “" .. self.query .. "”.")
+            or "This category has no direct items."
         a:append(string.format("{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}%s",
             rightX, listTop + I(rowH * 0.4), fs, C_DIM, ass_escape(msg)))
     end
@@ -578,13 +673,13 @@ function Menu:render()
             local dcol = on_bar and C_SELTXT or C_ACCENT
             a:append(string.format("{\\1c%s}%s{\\1c%s}%s",
                 dcol, dot, maincol, ass_escape(truncate(row.label, avail - 3))))
-        else -- setting: marker + "name = value"
+        else -- item: marker + "name = value"
             local mk = row.marker or ""
             local mcol = on_bar and C_SELTXT
                 or (mk == "*" and C_MODIFIED or (mk == "●" and C_ACCENT or C_DIM))
             local s = row.ref
-            local nm = prettify(s.name)
-            local val = value_of(s)
+            local nm = self:label(s)
+            local val = self:val(s) or ""
             -- reserve room for the search category hint if present
             local hintLen = (row.hint and row.hint ~= "") and (math.min(#row.hint, 22) + 3) or 0
             local budget = avail - 2 - hintLen
@@ -600,9 +695,15 @@ function Menu:render()
             local mkText = (mk ~= "") and (mk .. " ") or "  "
             local nmcol = on_bar and C_SELTXT or C_SETNAME
             local valcol = on_bar and C_SELTXT or C_SETVAL
-            a:append(string.format("{\\1c%s}%s{\\1c%s}%s {\\1c%s}= {\\1c%s}%s",
-                mcol, mkText, nmcol, ass_escape(nmShown),
-                on_bar and C_SELTXT or C_FAINT, valcol, ass_escape(val)))
+            -- when an item has no value, render just the name (no "= ")
+            if val == "" then
+                a:append(string.format("{\\1c%s}%s{\\1c%s}%s",
+                    mcol, mkText, nmcol, ass_escape(nmShown)))
+            else
+                a:append(string.format("{\\1c%s}%s{\\1c%s}%s {\\1c%s}= {\\1c%s}%s",
+                    mcol, mkText, nmcol, ass_escape(nmShown),
+                    on_bar and C_SELTXT or C_FAINT, valcol, ass_escape(val)))
+            end
 
             if row.hint and row.hint ~= "" then
                 a:append(string.format("   {\\fs%d\\1c%s}[%s]",
@@ -629,14 +730,14 @@ function Menu:render()
     -- =====================================================================
     a:new_event()
     a:append(string.format("{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s\\b1}Encore{\\b0}"
-        .. "{\\fs%d\\1c%s}  settings", treeX, titleY, title_fs, C_TEXT,
-        I(title_fs * 0.72), C_DIM))
+        .. "{\\fs%d\\1c%s}  %s", treeX, titleY, title_fs, C_TEXT,
+        I(title_fs * 0.72), C_DIM, ass_escape(self.model.title)))
 
     -- version line, right-aligned in the header: Encore + mpv versions
     a:new_event()
     a:append(string.format("{\\an6\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}Encore v%s   ·   %s",
         boxR - pad, titleY + I(title_fs * 0.5), foot_fs, C_DIM,
-        ENCORE_VERSION, ass_escape(mpv_version())))
+        self.model.version, ass_escape(mpv_version())))
 
     a:new_event()
     if self.query ~= "" then
@@ -644,12 +745,12 @@ function Menu:render()
             treeX, searchY, fs, C_DIM, C_TEXT,
             ass_escape(truncate(self.query, math.floor(treeW / glyphW) - 9)), C_ACCENT))
     else
-        a:append(string.format("{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}Search:  {\\1c%s}type to filter all settings…",
+        a:append(string.format("{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}Search:  {\\1c%s}type to filter all items…",
             treeX, searchY, fs, C_DIM, C_FAINT))
     end
 
     -- =====================================================================
-    -- RIGHT-BOTTOM PANE — help / description for the focused setting
+    -- RIGHT-BOTTOM PANE — detail / help for the focused item
     -- =====================================================================
     self:render_detail(a, rightX, helpTop, rightW, helpBot, title_fs, help_fs, fs)
 
@@ -662,15 +763,15 @@ function Menu:render()
     elseif self.query ~= "" then
         hint = "↑↓ move    Enter edit    type to refine    Backspace clear    Esc close"
     elseif self.focus == "tree" then
-        hint = "↑↓ category    →/Enter expand · enter settings    ← collapse · parent    type to search    Esc close"
+        hint = "↑↓ category    →/Enter expand · enter items    ← collapse · parent    type to search    Esc close"
     else
-        hint = "↑↓ setting    Enter edit    ←/Esc back    type to search"
+        hint = "↑↓ item    Enter edit    ←/Esc back    type to search"
     end
     -- mention help scrolling when the description overflows its pane
     if (self.help_max_scroll or 0) > 0 and self.mode ~= "options" then
         hint = hint .. "    ⇧↑↓/wheel scroll help"
     end
-    -- mention the manual link when the focused setting has one
+    -- mention the manual link when the focused item has one
     if self.url_value and self.mode ~= "options" then
         hint = hint .. "    Ctrl+O open link"
     end
@@ -679,25 +780,21 @@ function Menu:render()
     a:append(string.format("{\\an4\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}%s",
         treeX + I(pad * 0.2), footTextY, foot_fs, C_FOOT, hint))
 
-    -- Hit-test geometry for mouse support, recomputed each render. Each pane's
-    -- visible rows occupy [top + (i-from)*rowH, +rowH] within [x0,x1].
+    -- Hit-test geometry for mouse support, recomputed each render.
     self.tree_hit  = { x0 = boxL + I(pad * 0.4), x1 = divX - I(pad * 0.4),
                        top = treeTop, rowH = rowH, from = tFrom, to = tTo }
     self.list_hit  = { x0 = rightX - I(pad * 0.2), x1 = boxR - pad + I(pad * 0.2),
                        top = listTop, rowH = rowH, from = lFrom, to = lTo }
     self.panel_rect = { x0 = boxL, y0 = boxT, x1 = boxR, y1 = boxB }
 
-    -- Pin the ASS coordinate space to the OSD size we measured. Without this,
-    -- under Windows display scaling get_osd_size() reports physical pixels while
-    -- the overlay defaults to logical pixels, so every position is off by the
-    -- scale factor (the menu spills off the right/bottom).
+    -- Pin the ASS coordinate space to the OSD size we measured.
     self.overlay.res_x = osd_w
     self.overlay.res_y = osd_h
     self.overlay.data = a.text
     self.overlay:update()
 end
 
--- Bottom-right pane: details/help for the focused setting.
+-- Bottom-right pane: detail/help for the focused item, built from model blocks.
 function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
     local function I(v) return math.floor(v + 0.5) end
     local cols = math.max(16, math.floor(w / (help_fs * 0.52)))
@@ -705,69 +802,49 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
 
     local s = self:focused_setting()
     if not s then
-        -- nothing focused (e.g. an empty category): show a gentle placeholder
         a:new_event()
         a:append(string.format("{\\an7\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}%s",
-            x, top, help_fs, C_FAINT,
-            "Select a setting to see its description."))
+            x, top, help_fs, C_FAINT, ass_escape(self.model.empty_detail)))
         return
     end
 
-    -- clickable-URL state, recomputed each render (see the render loop below)
+    -- clickable-URL state, recomputed each render
     self.url_value = nil
     self.url_rect = nil
 
-    -- collect the body as wrapped lines, then clip to the pane height
+    -- turn the model's detail blocks into wrapped, coloured lines
     local lines = {}
-    local function add(text, colour, fontsz)
+    local function add(text, colour, fontsz, bold, link)
         for piece in (wrap(text, cols) .. "\\N"):gmatch("(.-)\\N") do
-            lines[#lines + 1] = { text = piece, colour = colour, fs = fontsz }
+            lines[#lines + 1] = { text = piece, colour = colour, fs = fontsz, bold = bold, link = link }
         end
     end
-    -- a wrapped link: tagged so it renders blue + underlined and is hit-tested
     local url_first, url_last
-    local function add_link(text)
-        url_first = #lines + 1
-        for piece in (wrap(text, cols) .. "\\N"):gmatch("(.-)\\N") do
-            lines[#lines + 1] = { text = piece, colour = C_LINK, fs = help_fs, link = true }
+    local function colour_of(c)
+        if c == "dim" then return C_DIM elseif c == "faint" then return C_FAINT end
+        return C_TEXT
+    end
+
+    for _, blk in ipairs(self.model.detail(self, s)) do
+        if blk.t == "gap" then
+            lines[#lines + 1] = { text = "", colour = C_DIM, fs = I(help_fs * 0.45) }
+        elseif blk.t == "title" then
+            lines[#lines + 1] = { text = wrap(ass_escape(blk.text), cols),
+                                  colour = C_ACCENT, fs = title_fs, bold = true }
+        elseif blk.t == "sub" then
+            lines[#lines + 1] = { text = ass_escape(blk.text), colour = C_FAINT, fs = help_fs }
+        elseif blk.t == "link" then
+            self.url_value = blk.url
+            url_first = #lines + 1
+            add(ass_escape(blk.text), C_LINK, help_fs, false, true)
+            url_last = #lines
+        else -- "text"
+            add(ass_escape(blk.text), colour_of(blk.c), help_fs)
         end
-        url_last = #lines
-    end
-    -- a small spacer (half a line) instead of a full blank line, so the
-    -- description gets as many lines as possible
-    local function gap() lines[#lines + 1] = { text = "", colour = C_DIM, fs = I(help_fs * 0.45) } end
-
-    -- header: friendly name (bigger, accent) + the raw option name beneath it
-    lines[#lines + 1] = { text = wrap(ass_escape(prettify(s.name)), cols), colour = C_ACCENT,
-                          fs = title_fs, bold = true }
-    lines[#lines + 1] = { text = ass_escape(s.name), colour = C_FAINT, fs = help_fs }
-    gap()
-
-    -- value
-    add("value:  " .. ass_escape(value_of(s)), C_TEXT, help_fs)
-
-    -- help
-    if s.help and s.help ~= "" then
-        gap()
-        add(ass_escape(s.help):gsub("/n", " "), C_TEXT, help_fs)
-    end
-    gap()
-
-    -- meta
-    local meta = {}
-    if s.default and s.default ~= "" then meta[#meta + 1] = "default: " .. s.default end
-    if s.type and s.type ~= "" then meta[#meta + 1] = "type: " .. s.type end
-    meta[#meta + 1] = "file: " .. (s.file or "?")
-    add(ass_escape(table.concat(meta, "      ")), C_DIM, help_fs, false)
-
-    if s.url and s.url ~= "" then
-        self.url_value = s.url
-        add_link(ass_escape(s.url))
     end
 
-    -- Show the FULL description. If it overflows the pane, scroll it (mouse
-    -- wheel over this pane, or Shift+Up/Down) rather than truncating. Reset the
-    -- scroll whenever the focused setting changes so each starts at the top.
+    -- Show the FULL detail. If it overflows, scroll it (wheel / Shift+Up/Down)
+    -- rather than truncating. Reset scroll when the focused item changes.
     if self._help_for ~= s then
         self._help_for = s
         self.help_scroll = 0
@@ -776,7 +853,6 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
 
     local function line_h(fsz) return fsz * 1.28 end
 
-    -- largest scroll offset that still fills the pane (can't scroll past the end)
     local function fits_from(startIdx)
         local used = 0
         for i = startIdx, #lines do
@@ -793,7 +869,6 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
     if self.help_scroll > max_scroll then self.help_scroll = max_scroll end
     if self.help_scroll < 0 then self.help_scroll = 0 end
 
-    -- render the visible window starting from the scroll offset
     local startIdx = self.help_scroll + 1
     a:new_event()
     a:append(string.format("{\\an7\\pos(%d,%d)\\bord0\\shad0}", x, top))
@@ -808,7 +883,6 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
             lines[i].fs, lines[i].colour,
             lines[i].bold and "\\b1" or "\\b0",
             lines[i].link and "\\u1" or "\\u0", lines[i].text))
-        -- record the on-screen box of the URL line(s) so a click can open it
         if url_first and i >= url_first and i <= url_last then
             if not self.url_rect then
                 self.url_rect = { x0 = x, y0 = line_top, x1 = x + w, y1 = line_top + h }
@@ -819,7 +893,6 @@ function Menu:render_detail(a, x, top, w, bot, title_fs, help_fs, fs)
         lastIdx = i
     end
 
-    -- scroll indicators (only when there's hidden content in that direction)
     if self.help_scroll > 0 then
         a:new_event()
         a:append(string.format("{\\an9\\pos(%d,%d)\\fs%d\\bord0\\shad0\\1c%s}▲",
@@ -841,13 +914,10 @@ function Menu:tree_move(delta)
     self.tree_sel = self.tree_sel + delta
     if self.tree_sel < 1 then self.tree_sel = #self.tree_rows end
     if self.tree_sel > #self.tree_rows then self.tree_sel = 1 end
-    -- moving the tree selection re-derives the right-hand settings list
     self:rebuild_list()
     self:render()
 end
 
--- Re-point tree_sel at a given node by identity (keeps it visible after a
--- rebuild that may have changed row indices).
 function Menu:select_node(node)
     for i, r in ipairs(self.tree_rows) do
         if r.ref == node then self.tree_sel = i; return true end
@@ -871,28 +941,22 @@ function Menu:toggle_node(expand)
     return true
 end
 
--- RIGHT / ENTER in the tree: expand a collapsed expandable node; otherwise
--- (already expanded, or it has direct settings) move focus into the list.
 function Menu:tree_forward()
     local row = self.tree_rows[self.tree_sel]
     if not row then return end
     if row.expandable and not row.ref.expanded then
         self:toggle_node(true)
     else
-        -- enter the settings list if there is anything to edit
         if #self.list_rows > 0 then
             self.focus = "list"
             self.list_sel = math.max(1, math.min(self.list_sel, #self.list_rows))
             self:render()
         elseif row.expandable then
-            -- expanded but empty of direct settings: collapse/expand toggle is
-            -- the only sensible action; do nothing else.
             self:render()
         end
     end
 end
 
--- LEFT in the tree: collapse an expanded node; else jump to the parent.
 function Menu:tree_back()
     local row = self.tree_rows[self.tree_sel]
     if not row then return end
@@ -920,85 +984,144 @@ function Menu:list_move(delta)
     self:render()
 end
 
--- Return focus from the list to the tree (without closing the menu).
 function Menu:list_back()
     self.focus = "tree"
     self:render()
 end
 
--- ENTER in the list: edit a setting, choose an option.
+-- ENTER in the list: pick a chooser option, or activate an item.
 function Menu:list_activate()
     local row = self.list_rows[self.list_sel]
     if not row then return end
     if row.kind == "option" then
-        local s = self.option_setting
-        s.value = row.ref.name
-        self.on_change(s)
-        self:exit_options(s)
-    elseif row.kind == "setting" then
-        self:edit(row.ref)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- Editing
--- ---------------------------------------------------------------------------
-
-function Menu:edit(s)
-    self.return_setting = s
-    if s.kind == "option" then
-        self.mode = "options"
-        self.option_setting = s
+        local opt = row.ref
+        local cs = self.choose_state
+        self.mode = "browse"
+        self.choose_state = nil
         self.focus = "list"
-        self.saved_list_sel = self.list_sel        -- to restore on cancel
-        self.list_sel = 1
+        self.list_sel = self.saved_list_sel or 1
         self.list_scroll = 0
-        -- preselect the current value
-        for i, opt in ipairs(s.options) do
-            if opt.name == s.value then self.list_sel = i; break end
-        end
+        if cs and cs.on_pick then cs.on_pick(opt.value) end
         self:rebuild_list(true)
+        if cs and cs.return_item then self:select_list_setting(cs.return_item) end
         self:render()
-    else
-        -- free-text value: hand off to the console input, hide our overlay
-        self.overlay:remove()
-        self:unbind_keys()
-        local hint = s.type and (" [" .. s.type .. "]") or ""
-        input.get({
-            prompt = s.name .. hint .. ":",
-            default_text = s.value or "",
-            submit = function(text)
-                s.value = text
-                self.on_change(s)
-                input.terminate()
-            end,
-            closed = function()
-                -- resume the menu, keeping the edited setting focused
-                self.overlay = mp.create_osd_overlay("ass-events")
-                self:bind_keys()
-                self:rebuild_list(true)
-                self:select_list_setting(s)
-                self:render()
-            end,
-        })
+    elseif row.kind == "setting" then
+        self.model.on_activate(self, row.ref)
     end
 end
 
--- Leave option-edit mode, restoring the browse/search list and re-focusing the
--- setting that was being edited.
-function Menu:exit_options(focus_setting)
+-- ---------------------------------------------------------------------------
+-- Public helpers for host on_activate flows
+-- ---------------------------------------------------------------------------
+
+-- Open an inline chooser (the combobox sub-mode). o = {
+--   title, options = {{label, value, help}, ...}, current,
+--   on_pick(value), detail_item (shown in the help pane), return_item }
+function Menu:choose(o)
+    self.mode = "options"
+    self.choose_state = o
+    self.focus = "list"
+    self.saved_list_sel = self.list_sel
+    self.list_sel = 1
+    self.list_scroll = 0
+    for i, opt in ipairs(o.options) do
+        if opt.value == o.current then self.list_sel = i; break end
+    end
+    self:rebuild_list(true)
+    self:render()
+end
+
+-- Ask for free text via mp.input. o = { prompt, default, on_submit(text), return_item }
+--
+-- Crucially, o.on_submit runs from the `closed` handler — AFTER the menu's overlay
+-- and key bindings have been restored — not from `submit`. A host on_submit may
+-- mutate items and call menu:reload()/refresh() (which render); doing that while
+-- the input is still tearing down would draw onto the just-removed overlay and
+-- leave an orphaned, undismissable overlay behind (a frozen menu).
+function Menu:ask_text(o)
+    self.overlay:remove()
+    self:unbind_keys()
+    local submitted, value = false, nil
+    input.get({
+        prompt = (o.prompt or "") .. ":",
+        default_text = o.default or "",
+        submit = function(text)
+            submitted, value = true, text
+            input.terminate()
+        end,
+        closed = function()
+            self.overlay = mp.create_osd_overlay("ass-events")
+            self:bind_keys()
+            if submitted and o.on_submit then o.on_submit(value) end
+            self:rebuild_list(true)
+            if o.return_item then self:select_list_setting(o.return_item) end
+            self:render()
+        end,
+    })
+end
+
+-- Rebuild the list from current items (after a host mutates them) and redraw.
+function Menu:refresh(keep_sel)
+    self:rebuild_list(keep_sel ~= false)
+    self:render()
+end
+
+-- Rebuild EVERYTHING (tree + lists) from a new/changed items array. Use this when
+-- items are added or removed (which changes the category tree); refresh() alone
+-- only re-reads the current node's items. Expansion state and the selected
+-- category are preserved by path where possible.
+function Menu:reload(items)
+    if items then self.model.items = items; self.settings = items end
+    self.by_name = {}
+    for _, s in ipairs(self.settings) do self.by_name[s.name] = s end
+
+    -- remember expanded category paths and the selected category path
+    local exp = {}
+    local function walk(node)
+        for _, name in ipairs(node.order) do
+            local c = node.children[name]
+            if c.expanded then exp[c.path] = true end
+            walk(c)
+        end
+    end
+    if self.tree then walk(self.tree) end
+    local sel_node = self:current_node()
+    local sel_path = sel_node and sel_node.path
+
+    self.tree = build_tree(self)
+    for _, name in ipairs(self.tree.order) do self.tree.children[name].expanded = true end
+    local function restore(node)
+        for _, name in ipairs(node.order) do
+            local c = node.children[name]
+            if exp[c.path] then c.expanded = true end
+            restore(c)
+        end
+    end
+    restore(self.tree)
+
+    self:rebuild_tree()
+    if sel_path then
+        for i, r in ipairs(self.tree_rows) do
+            if r.ref.path == sel_path then self.tree_sel = i; break end
+        end
+    end
+    self:rebuild_list(true)
+    self:render()
+end
+
+-- Leave the chooser without picking, restoring the browse list.
+function Menu:exit_options(focus_item)
     self.mode = "browse"
-    local s = focus_setting or self.option_setting
-    self.option_setting = nil
+    self.choose_state = nil
     self.list_sel = self.saved_list_sel or 1
     self.list_scroll = 0
     self.focus = "list"
     self:rebuild_list(true)
-    if s then self:select_list_setting(s) end
+    if focus_item then self:select_list_setting(focus_item) end
     self:render()
 end
 
--- Point list_sel at the row holding a given setting (after a rebuild).
+-- Point list_sel at the row holding a given item (after a rebuild).
 function Menu:select_list_setting(s)
     for i, r in ipairs(self.list_rows) do
         if r.kind == "setting" and r.ref == s then self.list_sel = i; return true end
@@ -1012,7 +1135,6 @@ end
 
 function Menu:enter_search_if_needed()
     if self.query ~= "" then
-        -- search results live in the right list and are edited there
         self.focus = "list"
         self.mode = "browse"
     end
@@ -1036,7 +1158,6 @@ function Menu:backspace()
         self.list_scroll = 0
         self:rebuild_list()
         if self.query == "" then
-            -- back to normal browse: focus the tree again
             self.focus = "tree"
         end
         self:render()
@@ -1068,7 +1189,6 @@ function Menu:on_enter()
     else self:tree_forward() end
 end
 
--- Scroll the help/description pane by `delta` lines (clamped).
 function Menu:help_scroll_by(delta)
     local maxs = self.help_max_scroll or 0
     local v = (self.help_scroll or 0) + delta
@@ -1080,12 +1200,6 @@ function Menu:help_scroll_by(delta)
     end
 end
 
--- Mouse wheel. Bound as a complex binding so each physical tick arrives with
--- its `scale`: mpv collapses rapid identical key-down events, so a plain binding
--- would register fast scrolling as a single step (or none). Fast scrolling sends
--- fewer events each carrying a larger scale, so we multiply the step count by it.
--- Scrolls the help pane if the cursor is over it, otherwise moves the focused
--- list/tree selection.
 function Menu:on_wheel(dir, e)
     if e then
         local ev = e.event
@@ -1113,13 +1227,10 @@ end
 
 function Menu:on_left()
     if self.mode == "options" then
-        self:exit_options(self.option_setting)
-        -- exit_options leaves focus on the list; LEFT cancels back to it
-        self.list_sel = self.saved_list_sel or self.list_sel
-        self:render()
+        local ri = self.choose_state and self.choose_state.return_item
+        self:exit_options(ri)
     elseif self.focus == "list" then
         if self.query ~= "" then
-            -- clearing a search returns to the tree
             self.query = ""
             self.list_sel = 1
             self.list_scroll = 0
@@ -1136,7 +1247,8 @@ end
 
 function Menu:on_esc()
     if self.mode == "options" then
-        self:exit_options(self.option_setting)
+        local ri = self.choose_state and self.choose_state.return_item
+        self:exit_options(ri)
     elseif self.focus == "list" then
         if self.query ~= "" then
             self.query = ""
@@ -1157,8 +1269,6 @@ end
 -- Mouse
 -- ---------------------------------------------------------------------------
 
--- Map a cursor position to (pane, row). pane is "tree" | "list" | "help" | nil;
--- row is the 1-based row index for "tree"/"list", nil otherwise.
 function Menu:hit_test(x, y)
     local th = self.tree_hit
     if th and x >= th.x0 and x <= th.x1 then
@@ -1181,9 +1291,6 @@ function Menu:hit_test(x, y)
     return nil, nil
 end
 
--- Hover: highlight the row under the cursor (and, in browse mode, select the
--- hovered category so its settings show on the right). Only re-renders when the
--- target row actually changes, so pixel-by-pixel motion is cheap.
 function Menu:on_mouse_move(x, y)
     if self.closed then return end
     self.mouse_x, self.mouse_y = x, y
@@ -1205,9 +1312,6 @@ function Menu:on_mouse_move(x, y)
     end
 end
 
--- Left click: activate the row under the cursor. Clicking a category toggles
--- its expansion; clicking a setting/option edits it; clicking outside the panel
--- closes the menu.
 function Menu:on_mouse_click()
     if self.closed then return end
     local x, y = self.mouse_x, self.mouse_y
@@ -1216,7 +1320,6 @@ function Menu:on_mouse_click()
         if p then x, y = p.x, p.y end
     end
     if not x then return end
-    -- a click on the help pane's URL line opens it in the browser
     local ur = self.url_rect
     if self.url_value and ur and x >= ur.x0 and x <= ur.x1
         and y >= ur.y0 and y <= ur.y1 then
@@ -1247,7 +1350,6 @@ function Menu:on_mouse_click()
     end
 end
 
--- Open the focused setting's manual URL in the browser (Ctrl+O).
 function Menu:open_focused_url()
     local s = self:focused_setting()
     if s and s.url and s.url ~= "" then open_url(s.url) end
@@ -1269,7 +1371,6 @@ function Menu:bind_keys()
     bind("UP", "up", function() self:on_up() end, true)
     bind("PGDWN", "pgdn", function() self:on_page(1) end, true)
     bind("PGUP", "pgup", function() self:on_page(-1) end, true)
-    -- scroll the help/description pane from the keyboard
     bind("Shift+DOWN", "hdown", function() self:help_scroll_by(1) end, true)
     bind("Shift+UP", "hup", function() self:help_scroll_by(-1) end, true)
     bind("ENTER", "enter", function() self:on_enter() end)
@@ -1278,18 +1379,13 @@ function Menu:bind_keys()
     bind("LEFT", "left", function() self:on_left() end)
     bind("BS", "bs", function() self:backspace() end, true)
     bind("SPACE", "space", function() self:type_char(" ") end, true)
-    -- open the focused setting's manual URL (also clickable in the help pane)
     bind("Ctrl+o", "openurl", function() self:open_focused_url() end)
 
-    -- printable characters feed the search box
     for i = 1, #PRINTABLE do
         local c = PRINTABLE:sub(i, i)
         bind(c, "key_" .. i, function() self:type_char(c) end, true)
     end
 
-    -- Mouse. Wheel is `complex` so we can read its scale (fast-scroll fix);
-    -- MBTN_LEFT activates on press; hover tracking comes from the mouse-pos
-    -- property observer.
     mp.add_forced_key_binding("WHEEL_DOWN", "uimenu_wdown",
         function(e) self:on_wheel(1, e) end, { complex = true })
     mp.add_forced_key_binding("WHEEL_UP", "uimenu_wup",

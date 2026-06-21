@@ -12,9 +12,14 @@
 local mp = require "mp"
 local msg = require "mp.msg"
 
+-- the two-pane menu renderer is shared with the shader manager, so it lives in
+-- script-modules; conf/conffile stay local to this script's directory.
+package.path = mp.command_native({ "expand-path", "~~/script-modules/?.lua" })
+    .. ";" .. package.path
+
 local conf = require "conf"
 local conffile = require "conffile"
-local menu = require "uimenu"
+local menu = require "encore-panel"
 
 -- ---------------------------------------------------------------------------
 -- Paths
@@ -138,7 +143,9 @@ local function open_menu()
             return
         end
     end
-    active = menu.open(settings, on_change)
+    -- the renderer's defaults reproduce the settings editor's behaviour, so the
+    -- model only needs the items and the persistence callback.
+    active = menu.open({ title = "settings", items = settings, on_change = on_change })
 end
 
 mp.add_key_binding(nil, "open", open_menu)

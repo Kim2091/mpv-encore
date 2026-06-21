@@ -61,7 +61,10 @@ check(by["remember-audio-device"].depends == "remember-state", "remember-audio-d
 
 -- ---- conffile round-trip ----
 print("=== conffile ===")
-local tmp = os.tmpname():gsub("\\", "/") .. ".conf"
+-- os.tmpname() can return a non-writable root path on Windows; build a temp
+-- path in a directory we know is writable instead.
+local tmpdir = (os.getenv("TEMP") or os.getenv("TMP") or os.getenv("TMPDIR") or "."):gsub("\\", "/")
+local tmp = tmpdir .. "/encore_test_" .. tostring(os.time()) .. ".conf"
 local cf_in = io.open(tmp, "w")
 cf_in:write("# my config\nvo=gpu-next\n\n# audio section\nvolume = 80  # inline\nfullscreen\nno-border\n")
 cf_in:close()
