@@ -46,7 +46,7 @@ local M = {}
 
 -- Package version, shown in the menu header alongside the mpv version. Single
 -- source of truth for the whole package — bump per release.
-local ENCORE_VERSION = "1.1.3"
+local ENCORE_VERSION = "1.1.4"
 
 -- mpv's version string with the trailing git hash dropped, e.g.
 -- "mpv v0.41.0-dev-g2d5dfb343" -> "mpv v0.41.0-dev".
