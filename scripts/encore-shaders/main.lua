@@ -30,8 +30,13 @@ local STORE = expand("~~home/encore-shaders.json")
 local SHADERS_DIR = expand("~~home/shaders")
 local is_windows = mp.get_property_native("platform") == "windows"
 
--- Stored shaders: { {name=, path="~~/shaders/x.glsl", mode="always"|"key"|"manual", key=}, ... }
+-- Stored shaders: { {name=, path="~~/shaders/x.glsl", mode="always"|"key"|"manual",
+--                    key=, opts={"param=value", ...}}, ... }
 local shaders = {}
+
+-- Stored presets: named, ordered groups of shader paths toggled together.
+-- { {name=, members={path1, path2, ...}, key= (optional)}, ... }
+local presets = {}
 
 -- Shaders found in glsl-shaders at startup that Encore doesn't manage — i.e. ones
 -- the user set in mpv.conf. Offered for import; not persisted by us until adopted.
@@ -41,12 +46,38 @@ local preconfigured = {}
 -- Persistence
 -- ---------------------------------------------------------------------------
 
+-- The on-disk store is an object { shaders = [...], presets = [...] }. Older
+-- versions wrote a bare ARRAY of shader objects; migrate that form transparently
+-- (treat the array as `shaders` with no presets) so no user data is ever lost.
 local function load_shaders()
+    shaders = {}
+    presets = {}
     local f = io.open(STORE, "rb")
-    if not f then shaders = {}; return end
+    if not f then return end
     local raw = f:read("*a"); f:close()
     local data = raw and raw ~= "" and utils.parse_json(raw) or nil
-    shaders = type(data) == "table" and data or {}
+    if type(data) ~= "table" then return end
+    if data.shaders == nil and data.presets == nil then
+        -- legacy array form: the whole document is the shader list
+        shaders = data
+    else
+        shaders = type(data.shaders) == "table" and data.shaders or {}
+        presets = type(data.presets) == "table" and data.presets or {}
+    end
+    -- defend against a hand-edited / malformed store so rendering can't crash
+    for i = #shaders, 1, -1 do
+        if type(shaders[i]) ~= "table" or type(shaders[i].path) ~= "string" then
+            table.remove(shaders, i)
+        end
+    end
+    for i = #presets, 1, -1 do
+        local pre = presets[i]
+        if type(pre) ~= "table" or type(pre.name) ~= "string" then
+            table.remove(presets, i)
+        elseif type(pre.members) ~= "table" then
+            pre.members = {}
+        end
+    end
 end
 
 -- Write `bytes` to `path` as safely as we can: write a temp file, move the
@@ -72,7 +103,7 @@ local function atomic_replace(path, bytes)
 end
 
 local function save_shaders()
-    return atomic_replace(STORE, utils.format_json(shaders))
+    return atomic_replace(STORE, utils.format_json({ shaders = shaders, presets = presets }))
 end
 
 -- ---------------------------------------------------------------------------
@@ -98,17 +129,85 @@ local function warn_vo()
     end
 end
 
+-- Does the shader file actually exist on disk? (~~ paths are expanded first.)
+local function file_exists(path)
+    return utils.file_info(expand(path)) ~= nil
+end
+
+-- glsl-shader-opts is a key/value list option. `append` takes "param=value";
+-- `remove` deletes by KEY only. To keep one shader's options from clobbering
+-- another's that happens to use the same parameter name, we scope each option to
+-- the shader by name — the mpv manual's "shadername/param=value" form, where the
+-- shader name is the base filename without extension. Options the user already
+-- scoped (containing a "/") are passed through unchanged.
+local function param_prefix(path)
+    local b = (path:gsub("[/\\]+$", "")):match("([^/\\]+)$") or path
+    return (b:gsub("%.%w+$", ""))
+end
+
+local function scoped_opt(name, o)
+    if o:find("/", 1, true) then return o end       -- already targets a shader
+    return name .. "/" .. o
+end
+
+local function add_opts(name, opts)
+    if not opts then return end
+    for _, o in ipairs(opts) do
+        if o and o ~= "" then
+            mp.commandv("change-list", "glsl-shader-opts", "append", scoped_opt(name, o))
+        end
+    end
+end
+
+local function remove_opts(name, opts)
+    if not opts then return end
+    for _, o in ipairs(opts) do
+        if o and o ~= "" then
+            local k = scoped_opt(name, o):match("^([^=]*)") or o   -- remove by key
+            k = (k:gsub("%s+$", ""))
+            if k ~= "" then mp.commandv("change-list", "glsl-shader-opts", "remove", k) end
+        end
+    end
+end
+
+-- Turn a shader ON and apply its options. Options are applied ONLY when the path
+-- was actually added, so calling this on an already-active shader can't make its
+-- options accumulate. unapply_shader is the exact mirror.
+local function apply_shader(path, opts)
+    if is_active(path) then return end
+    mp.commandv("change-list", "glsl-shaders", "append", path)
+    add_opts(param_prefix(path), opts)
+end
+
+local function unapply_shader(path, opts)
+    if not is_active(path) then return end
+    mp.commandv("change-list", "glsl-shaders", "remove", path)
+    remove_opts(param_prefix(path), opts)
+end
+
+-- Look up a managed shader's opts by path (canonical match); nil if not managed.
+local canon       -- forward declaration (defined below with the other path helpers)
+local function opts_for(path)
+    local c = canon(path)
+    for _, sh in ipairs(shaders) do
+        if canon(sh.path) == c then return sh.opts end
+    end
+    return nil
+end
+
 local function ensure_on(path)
-    if not is_active(path) then mp.commandv("change-list", "glsl-shaders", "append", path) end
+    apply_shader(path, opts_for(path))
 end
 
 local function set_off(path)
-    if is_active(path) then mp.commandv("change-list", "glsl-shaders", "remove", path) end
+    unapply_shader(path, opts_for(path))
 end
 
+-- Toggle a managed shader on/off, applying/removing its options to match.
 local function toggle(path)
     warn_vo()
-    mp.commandv("change-list", "glsl-shaders", "toggle", path)
+    if is_active(path) then unapply_shader(path, opts_for(path))
+    else apply_shader(path, opts_for(path)) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -117,7 +216,8 @@ end
 
 -- Canonical form of a shader path for reliable comparison (resolves ~~, and on
 -- Windows normalises slashes + case) so "~~/shaders/x" and its absolute form match.
-local function canon(p)
+-- Assigns to the forward-declared `canon` above (used by opts_for et al.).
+function canon(p)
     local e = expand(p)
     if is_windows then e = e:gsub("/", "\\"):lower() end
     return e
@@ -228,12 +328,9 @@ local function remove_glsl_from_mpv_conf(raw_path)
     return atomic_replace(MPV_CONF, bom .. table.concat(out, nl) .. (#out > 0 and nl or ""))
 end
 
--- Pull the shader path out of an input.conf command that toggles glsl-shaders,
--- e.g. `no-osd change-list glsl-shaders toggle "~~/shaders/x.glsl"; show-text …`.
--- Returns the path (quotes stripped) or nil if the command isn't a shader toggle.
-local function shader_toggle_path(cmd)
-    local rest = cmd:match("change%-list%s+glsl%-shaders%s+toggle%s+(.+)")
-    if not rest then return nil end
+-- Extract the first quoted-or-bare argument from `rest`, stripping a trailing
+-- ";next-command" or "#comment" off an unquoted value. Returns the value or nil.
+local function first_arg(rest)
     rest = trim(rest)
     local q = rest:sub(1, 1)
     if q == '"' or q == "'" then
@@ -243,8 +340,32 @@ local function shader_toggle_path(cmd)
     return p and (p:gsub("[;#].*$", ""))     -- drop a ";next-command" or "#comment" if attached
 end
 
+-- Pull the shader path out of an input.conf command that turns a glsl shader on,
+-- recognising the common idioms a user might bind a key to:
+--   * `change-list glsl-shaders toggle <path>`   (the documented on/off toggle)
+--   * `change-list glsl-shaders append <path>`   (enable; treated as a key shader)
+--   * `change-list glsl-shaders set    <path>`   (enable; treated as a key shader)
+--   * `cycle-values glsl-shaders "<path>" ""`    (the classic on/off cycle idiom)
+-- `no-osd` prefixes, quoted/unquoted paths and trailing `; …` / `# …` are handled.
+-- `apply-profile` is intentionally NOT handled (too indirect). Returns the path
+-- (quotes stripped) or nil if the command isn't one we recognise.
+local function shader_toggle_path(cmd)
+    local rest = cmd:match("change%-list%s+glsl%-shaders%s+toggle%s+(.+)")
+        or cmd:match("change%-list%s+glsl%-shaders%s+append%s+(.+)")
+        or cmd:match("change%-list%s+glsl%-shaders%s+set%s+(.+)")
+    if rest then return first_arg(rest) end
+    -- cycle-values glsl-shaders "<path>" "" — first value is the path, second "".
+    local cyc = cmd:match("cycle%-values%s+glsl%-shaders%s+(.+)")
+    if cyc then return first_arg(cyc) end
+    return nil
+end
+
 -- Keys in input.conf are matched case-insensitively by mpv; mirror that.
 local function same_key(a, b) return a:lower() == b:lower() end
+
+-- Forward declarations for the key-conflict helpers, which are defined later but
+-- referenced from import_one (above their definition).
+local key_conflict, warn_key_conflict
 
 -- Scan input.conf for shader-toggle bindings -> { {key=, path=}, ... }.
 local function scan_input_conf()
@@ -257,7 +378,7 @@ local function scan_input_conf()
             local key, cmd = s:match("^(%S+)%s+(.+)$")
             if key and cmd then
                 local p = shader_toggle_path(cmd)
-                if p then out[#out + 1] = { key = key, path = p } end
+                if p and p ~= "" then out[#out + 1] = { key = key, path = p } end
             end
         end
     end
@@ -342,6 +463,7 @@ local function import_one(e)
     end
     if not removed then return false end           -- nothing to remove (shouldn't happen)
     local mode = e.key and "key" or "always"
+    if mode == "key" then warn_key_conflict(e.key, nil) end
     shaders[#shaders + 1] = {
         name = (basename(e.path):gsub("%.%w+$", "")), path = e.path, mode = mode, key = e.key,
     }
@@ -358,7 +480,126 @@ local function import_one(e)
 end
 
 -- ---------------------------------------------------------------------------
--- Keybinds for mode == "key" shaders (registered from JSON each launch)
+-- Shader ordering and live re-apply
+-- ---------------------------------------------------------------------------
+
+-- The order of `shaders` is the intended apply order of the always-on stack. After
+-- a reorder, re-apply that order live: drop every managed always-on path currently
+-- in glsl-shaders, then re-append them in array order. Non-managed entries (e.g.
+-- shaders the user toggled on by hand) are left in place as best we can — they keep
+-- their relative position because we only remove/re-add the managed always-on ones.
+local function reapply_always_order()
+    local ordered = {}             -- always-on managed shaders in array order
+    for _, sh in ipairs(shaders) do
+        if sh.mode == "always" then ordered[#ordered + 1] = sh end
+    end
+    -- remove any managed always-on path that's currently active (and its opts)
+    for _, sh in ipairs(ordered) do
+        if is_active(sh.path) then unapply_shader(sh.path, sh.opts) end
+    end
+    -- re-append in array order, skipping ones whose file is missing
+    for _, sh in ipairs(ordered) do
+        if file_exists(sh.path) then apply_shader(sh.path, sh.opts) end
+    end
+end
+
+-- Swap shader at index i with its neighbour at i+delta (delta = -1 up, +1 down),
+-- persist, and re-apply the live order. Returns the shader's new index or nil.
+local function move_shader(sh, delta)
+    local idx
+    for i, s in ipairs(shaders) do if s == sh then idx = i; break end end
+    if not idx then return nil end
+    local j = idx + delta
+    if j < 1 or j > #shaders then return nil end
+    shaders[idx], shaders[j] = shaders[j], shaders[idx]
+    save_shaders()
+    reapply_always_order()
+    return j
+end
+
+-- ---------------------------------------------------------------------------
+-- Presets: named, ordered groups of shaders toggled together
+-- ---------------------------------------------------------------------------
+
+-- A preset is active when every member whose file EXISTS is currently in
+-- glsl-shaders (missing members are ignored, so one missing file doesn't make a
+-- preset un-toggleable). A preset with no existing members is never "active".
+local function preset_active(pre)
+    local any = false
+    for _, p in ipairs(pre.members) do
+        if file_exists(p) then
+            any = true
+            if not is_active(p) then return false end
+        end
+    end
+    return any
+end
+
+-- Apply a member path with whatever opts the matching managed shader declares.
+local function apply_member(path) apply_shader(path, opts_for(path)) end
+local function unapply_member(path) unapply_shader(path, opts_for(path)) end
+
+-- Mode of the managed shader at this path, or nil if the path isn't managed.
+local function mode_of(path)
+    local c = canon(path)
+    for _, sh in ipairs(shaders) do
+        if canon(sh.path) == c then return sh.mode end
+    end
+    return nil
+end
+
+-- Turn a whole preset on or off. On: append each existing member (in order) not
+-- already active. Off: remove each member EXCEPT those the user keeps always-on
+-- independently (so toggling a preset off never disables an always-on shader).
+local function toggle_preset(pre)
+    warn_vo()
+    if preset_active(pre) then
+        for _, p in ipairs(pre.members) do
+            if mode_of(p) ~= "always" then unapply_member(p) end
+        end
+    else
+        for _, p in ipairs(pre.members) do
+            if file_exists(p) and not is_active(p) then apply_member(p) end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Key-conflict detection
+-- ---------------------------------------------------------------------------
+
+-- Keys in input.conf are matched case-insensitively by mpv; mirror that.
+-- (Defined earlier as same_key; reused here for conflict checks.)
+
+-- Find a managed shader or preset (other than `self_ref`) already bound to `key`.
+-- Returns a human-readable description of the conflict, or nil if none.
+-- (Assigns to the forward-declared locals above.)
+key_conflict = function(key, self_ref)
+    if not key or key == "" then return nil end
+    for _, sh in ipairs(shaders) do
+        if sh ~= self_ref and sh.mode == "key" and sh.key and same_key(sh.key, key) then
+            return "shader “" .. sh.name .. "”"
+        end
+    end
+    for _, pre in ipairs(presets) do
+        if pre ~= self_ref and pre.key and same_key(pre.key, key) then
+            return "preset “" .. pre.name .. "”"
+        end
+    end
+    return nil
+end
+
+-- Warn (OSD) if assigning `key` to `self_ref` collides with another managed item.
+warn_key_conflict = function(key, self_ref)
+    local who = key_conflict(key, self_ref)
+    if who then
+        mp.osd_message("Warning: key " .. key .. " is already used by " .. who
+            .. ". The last one registered will win.", 5)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Keybinds for mode == "key" shaders and presets (registered from JSON each launch)
 -- ---------------------------------------------------------------------------
 
 local registered = {}      -- list of binding names currently registered
@@ -370,14 +611,37 @@ end
 
 local function register_keys()
     unregister_keys()
+    local used = {}        -- lower(key) -> description, to detect duplicate bindings
+    local function note(key, what)
+        local lk = key:lower()
+        if used[lk] then
+            msg.warn("key " .. key .. " is bound to both " .. used[lk]
+                .. " and " .. what .. "; the last registered wins")
+        end
+        used[lk] = what
+    end
     for i, sh in ipairs(shaders) do
         if sh.mode == "key" and sh.key and sh.key ~= "" then
             local name = "encore_shader_" .. i
             local path = sh.path
             local label = sh.name
+            note(sh.key, "shader “" .. label .. "”")
             mp.add_key_binding(sh.key, name, function()
                 toggle(path)
                 mp.osd_message((is_active(path) and "Shader on: " or "Shader off: ") .. label, 2)
+            end)
+            registered[#registered + 1] = name
+        end
+    end
+    for i, pre in ipairs(presets) do
+        if pre.key and pre.key ~= "" then
+            local name = "encore_preset_" .. i
+            local p = pre
+            local label = pre.name
+            note(pre.key, "preset “" .. label .. "”")
+            mp.add_key_binding(pre.key, name, function()
+                toggle_preset(p)
+                mp.osd_message((preset_active(p) and "Preset on: " or "Preset off: ") .. label, 2)
             end)
             registered[#registered + 1] = name
         end
@@ -449,8 +713,17 @@ end
 -- ---------------------------------------------------------------------------
 
 local CAT_MINE = "My Shaders"
+local CAT_PRESETS = "Presets"
 local CAT_ADD  = "Add from Folder"
 local CAT_PRE  = "Preconfigured"
+
+-- Does any managed shader currently reference a file that's gone from disk?
+local function any_missing()
+    for _, sh in ipairs(shaders) do
+        if not file_exists(sh.path) then return true end
+    end
+    return false
+end
 
 local function build_items()
     local items = {}
@@ -458,6 +731,14 @@ local function build_items()
         items[#items + 1] = { kind = "shader", ref = sh, name = sh.name, cat = CAT_MINE }
     end
     items[#items + 1] = { kind = "add", name = "＋ Add shader…", cat = CAT_MINE }
+    if any_missing() then
+        items[#items + 1] = { kind = "prune", name = "⚠ Prune missing shaders", cat = CAT_MINE }
+    end
+    -- presets: named, ordered groups toggled together
+    for _, pre in ipairs(presets) do
+        items[#items + 1] = { kind = "preset", ref = pre, name = pre.name, cat = CAT_PRESETS }
+    end
+    items[#items + 1] = { kind = "newpreset", name = "＋ New preset…", cat = CAT_PRESETS }
     for _, f in ipairs(scan_folder()) do
         items[#items + 1] = { kind = "browse", name = f.name, path = f.path, cat = CAT_ADD }
     end
@@ -485,6 +766,7 @@ local active_menu       -- single-instance guard
 
 -- forward declarations (mutually recursive flows)
 local configure_shader, shader_actions, add_flow
+local preset_actions, edit_members, new_preset
 
 -- choose the run mode for a shader, then persist + apply
 configure_shader = function(menu, sh)
@@ -503,7 +785,10 @@ configure_shader = function(menu, sh)
                     default = sh.key,
                     -- runs after the menu is restored (see Menu:ask_text)
                     on_submit = function(k)
-                        if k and k ~= "" then sh.mode = "key"; sh.key = k end
+                        if k and k ~= "" then
+                            warn_key_conflict(k, sh)
+                            sh.mode = "key"; sh.key = k
+                        end
                         save_shaders(); register_keys(); menu:reload(build_items())
                     end,
                 }
@@ -521,19 +806,60 @@ end
 -- the per-shader action chooser (Enter on a managed shader)
 shader_actions = function(menu, sh)
     local on = is_active(sh.path)
+    local missing = not file_exists(sh.path)
+    -- index in the shaders array, for the move affordances
+    local idx
+    for i, s in ipairs(shaders) do if s == sh then idx = i; break end end
+
+    local options = {}
+    if missing then
+        options[#options + 1] = { label = "Remove (missing file)", value = "remove" }
+    else
+        options[#options + 1] = { label = on and "Turn off now" or "Turn on now", value = "toggle" }
+    end
+    options[#options + 1] = { label = "Change how it runs…", value = "mode" }
+    options[#options + 1] = { label = "Set options…", value = "opts" }
+    if idx and idx > 1 then
+        options[#options + 1] = { label = "Move up", value = "up" }
+    end
+    if idx and idx < #shaders then
+        options[#options + 1] = { label = "Move down", value = "down" }
+    end
+    options[#options + 1] = { label = "Rename…", value = "rename" }
+    if not missing then
+        options[#options + 1] = { label = "Remove", value = "remove" }
+    end
+
     menu:choose{
         title = "Shader: " .. sh.name,
-        options = {
-            { label = on and "Turn off now" or "Turn on now", value = "toggle" },
-            { label = "Change how it runs…", value = "mode" },
-            { label = "Rename…", value = "rename" },
-            { label = "Remove", value = "remove" },
-        },
+        options = options,
         on_pick = function(v) defer(function()
             if v == "toggle" then
                 toggle(sh.path); menu:refresh()
             elseif v == "mode" then
                 configure_shader(menu, sh)
+            elseif v == "opts" then
+                menu:ask_text{
+                    prompt = "Options for “" .. sh.name
+                        .. "” (param=value, comma-separated)",
+                    default = sh.opts and table.concat(sh.opts, ", ") or "",
+                    on_submit = function(t)
+                        local pfx = param_prefix(sh.path)
+                        -- remove any currently-applied opts before replacing them
+                        if is_active(sh.path) then remove_opts(pfx, sh.opts) end
+                        local list = {}
+                        for piece in ((t or "") .. ","):gmatch("(.-),") do
+                            local o = trim(piece)
+                            if o ~= "" then list[#list + 1] = o end
+                        end
+                        sh.opts = #list > 0 and list or nil
+                        if is_active(sh.path) then add_opts(pfx, sh.opts) end
+                        save_shaders(); menu:reload(build_items())
+                    end }
+            elseif v == "up" then
+                move_shader(sh, -1); menu:reload(build_items())
+            elseif v == "down" then
+                move_shader(sh, 1); menu:reload(build_items())
             elseif v == "rename" then
                 menu:ask_text{ prompt = "Shader name", default = sh.name,
                     on_submit = function(t)
@@ -587,6 +913,138 @@ add_flow = function(menu)
     }
 end
 
+-- Remove every managed shader whose file is missing on disk (turning each off
+-- first), persist, re-register keys, and reload.
+local function prune_missing(menu)
+    local removed = 0
+    for i = #shaders, 1, -1 do
+        local sh = shaders[i]
+        if not file_exists(sh.path) then
+            set_off(sh.path)
+            table.remove(shaders, i)
+            removed = removed + 1
+        end
+    end
+    if removed > 0 then save_shaders(); register_keys() end
+    mp.osd_message("Pruned " .. removed .. " missing shader" .. (removed == 1 and "" or "s") .. ".", 3)
+    menu:reload(build_items())
+end
+
+-- A short label for a preset value/marker: "on · N shaders" plus its key, if any.
+local function preset_value(pre)
+    local n = #pre.members
+    local s = (preset_active(pre) and "on" or "off") .. " · " .. n
+        .. " shader" .. (n == 1 and "" or "s")
+    if pre.key and pre.key ~= "" then s = s .. " · key: " .. pre.key end
+    return s
+end
+
+-- Edit which managed shaders belong to a preset. Lists every managed shader as a
+-- toggleable membership row (active members are dotted, in their current order at
+-- the top); picking one adds or removes it. A "Done" row closes the editor.
+edit_members = function(menu, pre)
+    local options = {}
+    -- in-preset members first, in order, so the list reflects apply order
+    local in_preset = {}
+    for _, p in ipairs(pre.members) do in_preset[canon(p)] = true end
+    for _, p in ipairs(pre.members) do
+        local name = basename(p)
+        for _, sh in ipairs(shaders) do
+            if canon(sh.path) == canon(p) then name = sh.name; break end
+        end
+        options[#options + 1] = { label = "● " .. name, value = "toggle:" .. p }
+    end
+    -- then the managed shaders not yet in the preset
+    for _, sh in ipairs(shaders) do
+        if not in_preset[canon(sh.path)] then
+            options[#options + 1] = { label = "  " .. sh.name, value = "toggle:" .. sh.path }
+        end
+    end
+    options[#options + 1] = { label = "Done", value = "__done__" }
+
+    menu:choose{
+        title = "Members of “" .. pre.name .. "” (Enter toggles)",
+        options = options,
+        on_pick = function(v) defer(function()
+            if v == "__done__" then
+                menu:reload(build_items())
+                return
+            end
+            local path = v:match("^toggle:(.+)$")
+            if path then
+                local c = canon(path)
+                local found
+                for i, p in ipairs(pre.members) do
+                    if canon(p) == c then found = i; break end
+                end
+                if found then table.remove(pre.members, found)
+                else pre.members[#pre.members + 1] = path end
+                save_shaders()
+                -- re-open the editor so the user can keep toggling members
+                edit_members(menu, pre)
+            end
+        end) end,
+    }
+end
+
+-- The "＋ New preset…" flow: name it, create it empty, then edit its members.
+new_preset = function(menu)
+    menu:ask_text{
+        prompt = "Preset name",
+        on_submit = function(t)
+            if not t or t == "" then return end
+            local pre = { name = t, members = {} }
+            presets[#presets + 1] = pre
+            save_shaders()
+            menu:reload(build_items())
+            defer(function() edit_members(menu, pre) end)
+        end }
+end
+
+-- The per-preset action chooser (Enter on a preset row).
+preset_actions = function(menu, pre)
+    local active = preset_active(pre)
+    menu:choose{
+        title = "Preset: " .. pre.name,
+        options = {
+            { label = active and "Turn off now" or "Turn on now", value = "toggle" },
+            { label = "Assign a key…", value = "key" },
+            { label = "Edit members…", value = "members" },
+            { label = "Rename…", value = "rename" },
+            { label = "Remove", value = "remove" },
+        },
+        on_pick = function(v) defer(function()
+            if v == "toggle" then
+                toggle_preset(pre); menu:refresh()
+            elseif v == "key" then
+                menu:ask_text{
+                    prompt = "Key for preset “" .. pre.name .. "” (e.g. Ctrl+a)",
+                    default = pre.key,
+                    on_submit = function(k)
+                        if k and k ~= "" then
+                            warn_key_conflict(k, pre)
+                            pre.key = k
+                        else
+                            pre.key = nil
+                        end
+                        save_shaders(); register_keys(); menu:reload(build_items())
+                    end }
+            elseif v == "members" then
+                edit_members(menu, pre)
+            elseif v == "rename" then
+                menu:ask_text{ prompt = "Preset name", default = pre.name,
+                    on_submit = function(t)
+                        if t and t ~= "" then pre.name = t end
+                        save_shaders(); menu:reload(build_items())
+                    end }
+            elseif v == "remove" then
+                for i, p in ipairs(presets) do if p == pre then table.remove(presets, i); break end end
+                save_shaders(); register_keys(); menu:reload(build_items())
+            end
+        end) end,
+    }
+end
+
 local MODEL = {
     title = "shaders",
     category_of = function(_, it) return it.cat end,
@@ -595,7 +1053,10 @@ local MODEL = {
 
     value_of = function(_, it)
         if it.kind == "shader" then
+            if not file_exists(it.ref.path) then return "missing · " .. mode_label(it.ref) end
             return (is_active(it.ref.path) and "on" or "off") .. " · " .. mode_label(it.ref)
+        elseif it.kind == "preset" then
+            return preset_value(it.ref)
         elseif it.kind == "ext" then
             local e = it.entry
             if e.key then return "key: " .. e.key .. " · input.conf" end
@@ -605,7 +1066,11 @@ local MODEL = {
     end,
 
     marker_of = function(_, it)
-        if it.kind == "shader" and is_active(it.ref.path) then return "●" end
+        if it.kind == "shader" then
+            if not file_exists(it.ref.path) then return "⚠" end
+            if is_active(it.ref.path) then return "●" end
+        end
+        if it.kind == "preset" and preset_active(it.ref) then return "●" end
         -- only always-on preconfigured shaders are currently active
         if it.kind == "ext" and not it.entry.key and is_active(it.entry.path) then return "●" end
         return ""
@@ -614,17 +1079,29 @@ local MODEL = {
     detail = function(_, it)
         if it.kind == "shader" then
             local sh = it.ref
+            local missing = not file_exists(sh.path)
+            local status = missing and "MISSING (file not found)"
+                or (is_active(sh.path) and "ON" or "off")
             local b = {
                 { t = "title", text = sh.name },
                 { t = "sub", text = sh.path },
                 { t = "gap" },
-                { t = "text", text = "Status:  " .. (is_active(sh.path) and "ON" or "off") },
+                { t = "text", text = "Status:  " .. status },
                 { t = "text", text = "Runs:    " .. mode_label(sh) },
             }
+            if sh.opts and #sh.opts > 0 then
+                b[#b + 1] = { t = "text", text = "Options: " .. table.concat(sh.opts, ", ") }
+            end
             b[#b + 1] = { t = "gap" }
-            b[#b + 1] = { t = "text",
-                text = "Enter to toggle it now, change how it runs, rename or remove it.",
-                c = "dim" }
+            if missing then
+                b[#b + 1] = { t = "text",
+                    text = "This shader file no longer exists on disk. It won't be applied; "
+                        .. "Enter to remove it, or restore the file.", c = "dim" }
+            else
+                b[#b + 1] = { t = "text",
+                    text = "Enter to toggle it now, change how it runs, set options, "
+                        .. "reorder, rename or remove it.", c = "dim" }
+            end
             if not vo_supports_shaders() then
                 b[#b + 1] = { t = "gap" }
                 b[#b + 1] = { t = "text",
@@ -632,6 +1109,49 @@ local MODEL = {
                         .. "; shaders need vo=gpu or gpu-next.", c = "faint" }
             end
             return b
+        elseif it.kind == "preset" then
+            local pre = it.ref
+            local b = {
+                { t = "title", text = pre.name },
+                { t = "gap" },
+                { t = "text", text = "Status:  " .. (preset_active(pre) and "ON (all members on)" or "off") },
+            }
+            if pre.key and pre.key ~= "" then
+                b[#b + 1] = { t = "text", text = "Key:     " .. pre.key }
+            end
+            b[#b + 1] = { t = "gap" }
+            b[#b + 1] = { t = "text", text = "Members (apply order):", c = "dim" }
+            if #pre.members == 0 then
+                b[#b + 1] = { t = "text", text = "(none yet — use Edit members…)", c = "faint" }
+            else
+                for i, p in ipairs(pre.members) do
+                    local name = basename(p)
+                    for _, sh in ipairs(shaders) do
+                        if canon(sh.path) == canon(p) then name = sh.name; break end
+                    end
+                    local miss = file_exists(p) and "" or "  ⚠ missing"
+                    b[#b + 1] = { t = "text", text = "  " .. i .. ". " .. name .. miss, c = "dim" }
+                end
+            end
+            b[#b + 1] = { t = "gap" }
+            b[#b + 1] = { t = "text",
+                text = "Enter to toggle the whole group, assign a key, edit members, "
+                    .. "rename or remove it.", c = "dim" }
+            return b
+        elseif it.kind == "prune" then
+            return {
+                { t = "title", text = "Prune missing shaders" },
+                { t = "gap" },
+                { t = "text", text = "Remove every managed shader whose file no longer exists "
+                    .. "on disk. Presets are not changed." },
+            }
+        elseif it.kind == "newpreset" then
+            return {
+                { t = "title", text = "New preset" },
+                { t = "gap" },
+                { t = "text", text = "Create a named group of shaders that toggle together "
+                    .. "(e.g. a multi-pass upscaling mode). You'll pick its members next." },
+            }
         elseif it.kind == "add" then
             return {
                 { t = "title", text = "Add a shader" },
@@ -678,6 +1198,12 @@ local MODEL = {
     on_activate = function(menu, it)
         if it.kind == "shader" then
             shader_actions(menu, it.ref)
+        elseif it.kind == "preset" then
+            preset_actions(menu, it.ref)
+        elseif it.kind == "newpreset" then
+            defer(function() new_preset(menu) end)
+        elseif it.kind == "prune" then
+            defer(function() prune_missing(menu) end)
         elseif it.kind == "add" then
             add_flow(menu)
         elseif it.kind == "browse" then
@@ -738,6 +1264,9 @@ mp.register_script_message("open", open_manager)
 load_shaders()
 detect_preconfigured()
 for _, sh in ipairs(shaders) do
-    if sh.mode == "always" then ensure_on(sh.path) end
+    -- Skip always-on shaders whose file is gone: applying a missing path just
+    -- spams mpv errors. It stays listed (flagged "missing") so the user can fix
+    -- or prune it.
+    if sh.mode == "always" and file_exists(sh.path) then ensure_on(sh.path) end
 end
 register_keys()
