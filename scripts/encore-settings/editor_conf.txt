@@ -783,6 +783,91 @@ directory = Audio
 width = 500
 help = Audio file extentions to try to match when using --audio-file-auto, --autocreate-playlist or --directory-filter-types. By mpv.net used to create file associations. Default: aac,ac3,aiff,ape,au,dts,eac3,flac,m4a,mka,mp3,oga,ogg,ogm,opus,thd,wav,wav,wma,wv
 
+name = loudness-mode
+file = live
+directory = Audio/Loudness
+help = Which loudness processing is active right now — a live playback control that takes effect immediately and is remembered across restarts.\n\nOff leaves audio untouched. Leveling gently evens out overall volume so scenes and files stay consistent. Night mode aggressively tames loud effects and lifts quiet dialogue, with a sub-bass trim, for late-night listening.\n\nThe settings below tune how Leveling and Night mode sound.
+property = user-data/encore-audio-mode
+message = encore_audio set
+default = off
+option = off       Off — no processing
+option = leveling  Leveling — even out volume across scenes
+option = night     Night — tame peaks, lift quiet dialogue
+
+name = loudness-remember
+file = encore
+directory = Audio/Loudness
+help = Remember the active loudness mode between sessions. When on, whichever mode you last chose — Off, Leveling or Night — is restored the next time mpv starts. When off, playback always starts with Loudness off; your choice still applies for the rest of the current session, and is picked up again if you switch this back on. Default: yes
+default = yes
+option = yes
+option = no
+
+name = loudness-night-strength
+file = encore
+directory = Audio/Loudness
+notify = encore_audio reload quiet
+help = Night mode: how hard loud sounds are pulled down toward the rest of the mix. This is the compression ratio — higher tames explosions and sudden effects more. (FFmpeg acompressor "ratio".)
+url = https://ffmpeg.org/ffmpeg-filters.html#acompressor
+default = 4
+option = 2   Light
+option = 4   Medium
+option = 6   Strong
+option = 10  Maximum
+
+name = loudness-night-boost
+file = encore
+directory = Audio/Loudness
+notify = encore_audio reload quiet
+help = Night mode: how much the result is lifted back up after the loud parts have been pulled down, in decibels. This is what makes quiet dialogue audible. Higher is louder but leaves less headroom for sudden transients.
+default = 15
+option = 10  Subtle (+10 dB)
+option = 13  Moderate (+13 dB)
+option = 15  Strong (+15 dB)
+option = 18  Aggressive (+18 dB)
+
+name = loudness-night-threshold
+file = encore
+directory = Audio/Loudness
+notify = encore_audio reload quiet
+help = Night mode: the level above which compression starts, in dBFS. Lower catches more of the material (dialogue included) for a more even result; higher leaves quiet passages alone and tames only the loudest moments. (FFmpeg acompressor "threshold".)
+default = -30
+option = -36  Everything
+option = -30  Balanced
+option = -24  Louder parts only
+option = -18  Peaks only
+
+name = loudness-night-release
+file = encore
+directory = Audio/Loudness
+notify = encore_audio reload quiet
+help = Night mode: how quickly the volume recovers after a loud moment, in milliseconds. Faster follows the action closely but can sound like the mix is breathing; smoother is far less noticeable. (FFmpeg acompressor "release".)
+default = 300
+option = 150   Fast
+option = 300   Balanced
+option = 600   Smooth
+option = 1000  Very smooth
+
+name = loudness-night-bass-cut
+file = encore
+directory = Audio/Loudness
+notify = encore_audio reload quiet
+help = Night mode: trims deep sub-bass rumble (around 100 Hz) before compression, which stops low-end thumps from pulling the gain down for the whole mix and from distorting on small speakers. Set Off to keep full bass.
+default = -2.5
+option = 0     Off
+option = -2.5  Default
+option = -5    Strong
+
+name = loudness-leveling-strength
+file = encore
+directory = Audio/Loudness
+notify = encore_audio reload quiet
+help = Leveling mode: how much the volume is evened out between quiet and loud scenes. This is the compression ratio; Leveling always stays gentler and slower-acting than Night mode. (FFmpeg acompressor "ratio".)
+url = https://ffmpeg.org/ffmpeg-filters.html#acompressor
+default = 2
+option = 1.5  Gentle
+option = 2    Medium
+option = 3    Strong
+
 name = slang
 file = mpv
 directory = Subtitle

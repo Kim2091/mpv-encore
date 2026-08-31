@@ -24,11 +24,12 @@ bindings of its own.
 
 | Script | What it does |
 |--------|--------------|
-| **encore-settings** | Graphical settings editor — 153 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
+| **encore-settings** | Graphical settings editor — 161 settings in a category tree, live search, live-apply, comment-preserving writes to `mpv.conf`, full scrollable help for every option; keyboard **and mouse** driven |
 | **encore-files** | File operations via native dialogs (Windows): open files, load subtitle/audio, open from clipboard, DVD/Blu-ray; plus **Reveal in File Manager** (cross-platform — selects the file in Explorer / Finder, opens the folder elsewhere) |
 | **encore-mediainfo** | A detailed **media report** for the current file, shown in the settings menu's two-pane design — streams as categories, fields as rows, the focused field's full value in the detail pane, type-to-search, and Enter to copy a value. Container, size, duration, bitrate, and every video/audio/subtitle stream (codec, resolution, frame rate, colour/HDR, channels, sample rate, language) plus container tags. Built from mpv properties; distinct from `stats.lua`'s live metrics |
 | **encore-bookmarks** | Named **timestamp bookmarks** per file — quick-add at the current time, or open the bookmarks panel (same two-pane design) to jump, rename or delete. Persisted as JSON keyed by file, so they survive restarts (mpv itself only remembers a single resume position) |
 | **encore-shaders** | A **GLSL shader manager** in the settings menu's two-pane design — pick a shader file, choose how it runs (always on / a toggle key / manual), and it's applied and bound automatically on every launch. Persisted as JSON; no `input.conf` or `mpv.conf` edits needed. (Shaders require `--vo=gpu` or `gpu-next`.) |
+| **encore-audio** | **Loudness leveling** for late-night listening — *Leveling* gently evens out volume across scenes and files, *Night mode* tames loud effects and lifts quiet dialogue with a sub-bass trim. Switched from the right-click menu, a key, or Settings; how each mode sounds is tunable there too. A single labelled `acompressor` + `alimiter` filter, so it never disturbs your own `af` chain. Mode persisted as JSON and restored on launch |
 | **encore-remember** | Optional (off by default): a master toggle in Settings reveals per-aspect toggles — on quit, writes the current volume / mute, fullscreen, border, on-top, window size and audio device into `mpv.conf` so each carries over to the next launch |
 
 Most of what mpv.net offered is now built into modern mpv, so Encore leans on it

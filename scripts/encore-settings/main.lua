@@ -103,8 +103,27 @@ local function apply_property(name, value)
     end
 end
 
+local unpack_fn = table.unpack or unpack
+
+-- Send `script-message-to <target> <name> [args...]` from a "<target> <name>
+-- ..." spec, optionally appending one extra argument. Used by live controls
+-- (`message`, value appended) and post-save hooks (`notify`, no value).
+local function send_script_message(spec, extra)
+    local args = { "script-message-to" }
+    for tok in spec:gmatch("%S+") do args[#args + 1] = tok end
+    if extra ~= nil then args[#args + 1] = extra end
+    if #args >= 3 then mp.commandv(unpack_fn(args)) end
+end
+
 -- Called after any single setting is committed in the menu.
 local function on_change(setting)
+    -- Live controls (e.g. loudness mode) aren't backed by a config file: their
+    -- state is owned by a feature script. Route the change to that script via a
+    -- script message and skip all file persistence.
+    if setting.message and setting.message ~= "" then
+        send_script_message(setting.message, setting.value or "")
+        return
+    end
     if setting.file == "libplacebo" then
         local opts = sync_libplacebo()
         if opts then apply_property("libplacebo-opts", opts.value) end
@@ -114,12 +133,32 @@ local function on_change(setting)
     -- Persist immediately so changes survive even if the user just escapes.
     sync_libplacebo()
     write_file(MPV_CONF, cf:get_content("mpv"))
-    -- encore.conf is only written if it actually has content. The package no
-    -- longer ships any `file = encore` settings (their features are now native
-    -- mpv options), so this normally no-ops — but an existing encore.conf is
-    -- still round-tripped if the user has one.
+    -- encore.conf holds the package's own `file = encore` settings (the
+    -- encore-remember toggles and the loudness presets) — only non-default
+    -- values are written, so it's empty until one is changed.
     local encore_content = cf:get_content("encore")
     if encore_content ~= "" then write_file(ENCORE_CONF, encore_content) end
+
+    -- Now that the change is on disk, let any owning feature script re-read it
+    -- live (e.g. loudness presets → encore-audio rebuilds its filter graphs).
+    if setting.notify and setting.notify ~= "" then
+        send_script_message(setting.notify)
+    end
+end
+
+-- Settings with a `property` are live controls whose current value lives in an
+-- mpv property (owned by a feature script), not a config file. Refresh them from
+-- the property each time the menu opens so the display reflects the live state
+-- (which may have changed via a key binding or the context menu since load).
+local function refresh_live()
+    if not settings then return end
+    for _, s in ipairs(settings) do
+        if s.property and s.property ~= "" then
+            local v = mp.get_property(s.property, s.default or "")
+            s.value = v
+            s.start_value = v
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -145,6 +184,7 @@ local function open_menu()
     end
     -- the renderer's defaults reproduce the settings editor's behaviour, so the
     -- model only needs the items and the persistence callback.
+    refresh_live()
     active = menu.open({ title = "settings", items = settings, on_change = on_change })
 end
 

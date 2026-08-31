@@ -19,7 +19,7 @@ local content = f:read("*a"); f:close()
 local settings = conf.load(content)
 
 print("=== parser ===")
-check(#settings == 153, "settings count == 153 (got " .. #settings .. ")")
+check(#settings == 161, "settings count == 161 (got " .. #settings .. ")")
 
 -- index a few known settings
 local by = {}

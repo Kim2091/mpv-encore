@@ -4,11 +4,13 @@ mpv.net's settings menu, recreated for **vanilla mpv** as a pure-Lua script — 
 .NET, no external dependencies, and nothing to rebase when mpv updates (it lives
 outside the mpv source tree and uses only the stable scripting API).
 
-It reproduces mpv.net's data-driven config editor: 153 setting definitions
-(146 real mpv / libplacebo options + seven `file = encore` toggles read by the
-encore-remember helper — a master plus six per-aspect toggles it reveals)
-organised into a category tree, with live search, live-apply, and
-comment-preserving writes to `mpv.conf`.
+It reproduces mpv.net's data-driven config editor: 161 setting definitions —
+146 real mpv / libplacebo options, plus 15 Encore controls (seven `file =
+encore` toggles the encore-remember helper reads — a master plus six per-aspect
+toggles it reveals; six loudness presets and a `loudness-remember` toggle the
+encore-audio helper reads; and one live `loudness-mode` control) — organised
+into a category tree, with live search, live-apply, and comment-preserving
+writes to `mpv.conf`.
 
 ## Install
 

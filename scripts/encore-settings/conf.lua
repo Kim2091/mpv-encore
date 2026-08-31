@@ -140,6 +140,20 @@ function M.load(content)
             -- remember-state).
             setting.depends = section_get(section, "depends")
 
+            -- Live controls: a setting not backed by a config file. Its current
+            -- value is read from an mpv `property` (owned by a feature script)
+            -- and a change is dispatched to that script via `message`
+            -- ("<target> <name>", sent as script-message-to <target> <name>
+            -- <value>). Used for playback controls like the loudness mode.
+            setting.property = section_get(section, "property")
+            setting.message = section_get(section, "message")
+
+            -- optional: after this setting is committed AND persisted, send a
+            -- script-message so a feature script can re-read its config live
+            -- (e.g. loudness presets ask encore-audio to rebuild its filters).
+            -- Format: "<target> <name> [args...]".
+            setting.notify = section_get(section, "notify")
+
             local width = section_get(section, "width")
             if width then setting.width = tonumber(width) or 0 end
 
